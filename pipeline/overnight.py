@@ -45,8 +45,10 @@ def main():
                  for p in (ROOT / "data/clean").glob("traversals_*.parquet")}
     # real days only (skip synth-named leftovers)
     todo = sorted(d for d in days_have - days_done if d.startswith("2026_10"))
+    EXCLUDE = {"2026_10_16"}   # pathologically slow day-16 (archive corruption zone) - investigate separately
+    todo = [d for d in todo if d not in EXCLUDE]
     log(f"days with pings: {len(days_have)}, traversals done: {len(days_done)}, "
-        f"todo: {len(todo)} -> {todo}")
+        f"todo: {len(todo)} -> {todo} (excluded: {sorted(EXCLUDE & days_have)})")
     for d in todo:
         run("pipeline/03_project_trips.py", "--day", d)
 
