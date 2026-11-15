@@ -1,0 +1,168 @@
+<!-- Delhi Pulse · v0 planner client -->
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>Delhi Pulse</title>
+<script src="https://unpkg.com/maplibre-gl@3.6.2/dist/maplibre-gl.js"></script>
+<link href="https://unpkg.com/maplibre-gl@3.6.2/dist/maplibre-gl.css" rel="stylesheet"/>
+<style>
+  :root { --bg:#10121b; --panel:#161927; --ink:#e8eaf2; --dim:#8b90a5; --acc:#3ddc97; }
+  * { box-sizing:border-box; margin:0; }
+  body { background:var(--bg); color:var(--ink);
+         font-family:'Segoe UI',system-ui,-apple-system,sans-serif; }
+  #map { position:absolute; inset:0; }
+  .panel { position:absolute; z-index:2; top:16px; left:16px; width:min(380px,calc(100vw - 32px));
+           background:var(--panel); border-radius:16px; padding:14px;
+           box-shadow:0 8px 32px rgba(0,0,0,.45); }
+  .brand { font-size:13px; letter-spacing:.22em; color:var(--acc); font-weight:600; }
+  h1 { font-size:20px; margin:2px 0 12px; font-weight:700; }
+  .field { position:relative; margin-bottom:8px; }
+  input, .time { width:100%; padding:10px 12px; border-radius:10px; border:1px solid #262a3d;
+                 background:#0d0f18; color:var(--ink); font-size:14px; outline:none; }
+  input:focus { border-color:var(--acc); }
+  .sug { position:absolute; left:0; right:0; top:44px; background:#0d0f18; border:1px solid #262a3d;
+         border-radius:10px; z-index:5; max-height:200px; overflow:auto; display:none; }
+  .sug div { padding:8px 12px; font-size:13px; cursor:pointer; color:var(--dim); }
+  .sug div:hover { background:#1b1f33; color:var(--ink); }
+  .row { display:flex; gap:8px; }
+  button { width:100%; margin-top:6px; padding:11px; border:0; border-radius:10px;
+           background:var(--acc); color:#06281a; font-weight:700; font-size:14px; cursor:pointer; }
+  button:hover { filter:brightness(1.1); }
+  #results { margin-top:12px; display:flex; flex-direction:column; gap:8px; }
+  .card { background:#0d0f18; border:1px solid #262a3d; border-radius:12px; padding:10px 12px; cursor:pointer; }
+  .card:hover, .card.sel { border-color:var(--acc); }
+  .ttotal { font-size:18px; font-weight:700; }
+  .tband { font-size:11px; color:var(--dim); margin-left:6px; }
+  .badges { display:flex; gap:6px; margin:6px 0; flex-wrap:wrap; }
+  .badge { background:var(--acc); color:#06281a; font-weight:700; border-radius:6px;
+           padding:2px 8px; font-size:13px; }
+  .badge.walk { background:#2a2f4a; color:var(--dim); font-weight:500; }
+  .meta { font-size:12px; color:var(--dim); }
+  .hint { font-size:11px; color:var(--dim); margin-top:6px; }
+  @media (max-width:640px){ .panel{ position:relative; width:100%; border-radius:0; } #map{height:60vh} }
+</style>
+</head>
+<body>
+<div id="map"></div>
+<div class="panel">
+  <div class="brand">DELHI PULSE</div>
+  <h1>Bus journey planner <span style="color:var(--dim);font-weight:400;font-size:13px">v0</span></h1>
+  <div class="field"><input id="from" placeholder="From — stop name or click the map"/>
+    <div class="sug" id="fromSug"></div></div>
+  <div class="field"><input id="to" placeholder="To — stop name or click the map twice"/>
+    <div class="sug" id="toSug"></div></div>
+  <div class="field"><input id="when" type="datetime-local"/></div>
+  <button id="plan">Find journeys</button>
+  <div id="results"></div>
+  <div class="hint">Tip: first map click sets origin, second sets destination.</div>
+</div>
+<script>
+const API = location.protocol.startsWith('http') && location.pathname.startsWith('/web')
+  ? location.origin : 'http://localhost:8000';
+const map = new maplibregl.Map({
+  container:'map', style:'https://basemaps.cartocdn.com/gl/dark-matter-gl-style/style.json',
+  center:[77.21,28.62], zoom:10.5 });
+map.addControl(new maplibregl.NavigationControl());
+let picks = {from:null,to:null}, clicks = 0, markers = [], drawnLayers = [];
+
+function clearRoute(){ drawnLayers.forEach(id=>{ map.removeLayer(id); map.removeSource(id); });
+  drawnLayers = []; }
+
+const $ = id => document.getElementById(id);
+function setWhen(){ const n=new Date(); n.setMinutes(n.getMinutes()-n.getTimezoneOffset());
+  $('when').value = n.toISOString().slice(0,16); } setWhen();
+
+async function suggest(box, sugBox){
+  const q = box.value.trim(); if(q.length<2){ sugBox.style.display='none'; return; }
+  const r = await fetch(`${API}/stops/search?q=${encodeURIComponent(q)}`).then(r=>r.json()).catch(()=>[]);
+  sugBox.innerHTML=''; (r||[]).forEach(s=>{
+    const d=document.createElement('div');
+    d.textContent = s.name;
+    d.onclick=()=>{ setPoint(sugBox.id==='fromSug'?'from':'to', s.name, [s.lng,s.lat], `stop:${s.stop_id}`);
+      box.value=s.name; sugBox.style.display='none'; };
+    sugBox.appendChild(d); });
+  sugBox.style.display = r.length? 'block':'none';
+}
+function debounce(fn,ms){ let t; return (...a)=>{ clearTimeout(t); t=setTimeout(()=>fn(...a),ms); }; }
+$('from').oninput = debounce(e=>suggest($('from'),$('fromSug')),200);
+$('to').oninput   = debounce(e=>suggest($('to'),$('toSug')),200);
+['fromSug','toSug'].forEach(id=>$(id).onclick=e=>{ if(e.target.tagName!=='DIV') $(id).style.display='none'; });
+
+function setPoint(which, label, coord, stopId){
+  picks[which] = {label, coord, stopId};
+  drawPin(which);
+  if(which==='from') $('from').value = label;
+  if(which==='to')   $('to').value   = label;
+}
+function drawPin(which){
+  const p = picks[which]; if(!p) return;
+  const el = document.createElement('div');
+  el.textContent = which==='from' ? 'A' : 'B';
+  el.style.cssText = 'background:#3ddc97;color:#06281a;font-weight:700;width:22px;height:22px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:12px';
+  markers.push(new maplibregl.Marker({element:el}).setLngLat(p.coord).addTo(map));
+}
+map.on('click', e=>{
+  clicks++;
+  const which = (clicks%2===1) ? 'from' : 'to';
+  setPoint(which, `${e.lngLat.lat.toFixed(4)}, ${e.lngLat.lng.toFixed(4)}`,
+           [e.lngLat.lng, e.lngLat.lat], null);
+});
+
+$('plan').onclick = plan;
+async function plan(){
+  const f = picks.from ? (picks.from.stopId ? `stop:${picks.from.stopId}` : `${picks.from.coord[1]},${picks.from.coord[0]}`) : $('from').value;
+  const t = picks.to   ? (picks.to.stopId   ? `stop:${picks.to.stopId}`   : `${picks.to.coord[1]},${picks.to.coord[0]}`)   : $('to').value;
+  if(!f || !t){ return; }
+  const dep = $('when').value ? new Date($('when').value).toISOString() : '';
+  const r = await fetch(`${API}/journeys?from=${encodeURIComponent(f)}&to=${encodeURIComponent(t)}`
+      + (dep?`&depart=${encodeURIComponent(dep)}`:'')).then(r=>r.json()).catch(e=>({options:[],note:e.message}));
+  render(r);
+}
+function render(res){
+  clearRoute();
+  const box = $('results'); box.innerHTML='';
+  if(!res.options || !res.options.length){
+    box.innerHTML = `<div class="meta">${res.note || 'No journeys found'}</div>`; return; }
+  res.options.forEach((o,i)=>{
+    const c = document.createElement('div'); c.className='card';
+    c.innerHTML = `
+      <div><span class="ttotal">${Math.round(o.eta_p50_min)} min</span>
+      <span class="tband">${Math.round(o.eta_p10_min)}–${Math.round(o.eta_p90_min)} min range</span></div>
+      <div class="badges">
+        <span class="badge walk">walk ${Math.round(o.walk_o)}m</span>
+        <span class="badge">${o.route_name}</span>
+        <span class="badge walk">${Math.round(o.wait_min)} min wait</span>
+        <span class="badge walk">walk ${Math.round(o.walk_d)}m</span></div>
+      <div class="meta">Board ${o.board_name} → get off ${o.alight_name}<br/>
+      arrive ${new Date(o.arrive).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'})}</div>`;
+    c.onclick=()=>{ document.querySelectorAll('.card').forEach(x=>x.classList.remove('sel'));
+      c.classList.add('sel'); draw(o); };
+    box.appendChild(c);
+    if(i===0){ c.classList.add('sel'); draw(o); }
+  });
+  const coords = [];
+  (res.options[0]?.legs||[]).forEach(l=> (l.coords||l.stops||[]).forEach(c=>coords.push(c)));
+  if(coords.length) map.fitBounds(coords.reduce((b,c)=>b.extend(c),
+      new maplibregl.LngLatBounds(coords[0],coords[0])), {padding:80});
+}
+function draw(o){
+  clearRoute();
+  o.legs.forEach(l=>{
+    const id = (l.type==='bus'?'bus-':'wk-')+Math.random().toString(36).slice(2);
+    const coords = l.type==='bus' ? l.stops : l.coords;
+    map.addSource(id, {type:'geojson', data: lineGeo(coords)});
+    if(l.type==='bus'){
+      map.addLayer({id, type:'line', source:id, paint:{'line-color':'#3ddc97','line-width':4,'line-opacity':.9}});
+    } else {
+      map.addLayer({id, type:'line', source:id, paint:{'line-color':'#8b90a5','line-width':2,'line-dasharray':[2,3]}});
+    }
+    drawnLayers.push(id);
+  });
+}
+function lineGeo(coords){ return {type:'Feature', properties:{}, geometry:
+  {type:'LineString', coordinates: coords.map(c=>[c[1],c[0]])}}; }
+</script>
+</body>
+</html>
