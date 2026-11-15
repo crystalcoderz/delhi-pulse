@@ -23,7 +23,7 @@ from fastapi.staticfiles import StaticFiles
 from rapidfuzz import process as fuzz_process
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "pipeline"))
-from common import GTFS, MODEL, ROOT, WEB  # noqa: E402
+from common import CLEAN, GTFS, MODEL, ROOT, WEB  # noqa: E402
 
 IST = dt.timezone(dt.timedelta(hours=5, minutes=30))
 WALK_KMH = 4.8
@@ -147,25 +147,66 @@ def wait_minutes(route_id, stop_id):
     return DEFAULT_WAIT_S / 60.0
 
 
-def ride_time(pat, i, j, start_epoch):
+# (old ride_time superseded by the day-aware version above)
+
+
+def leg_seconds(route_id, a, b, dist_m, hour, day=None):
+    e = E50.get((route_id, a, b, hour))
+    if e and day is None:
+        return float(e)
+    if day is not None:
+        drh, dravg = _day_speeds(day)
+        sp = (drh.get((route_id, hour)) or dravg.get(route_id)
+              or RH.get((route_id, hour)) or RS.get(route_id)
+              or CH.get(hour) or CH_DEFAULT)
+        return dist_m * 3.6 / max(1.0, sp)
+    sp = RH.get((route_id, hour)) or RS.get(route_id) or CH.get(hour) or CH_DEFAULT
+    return dist_m * 3.6 / max(1.0, sp)   # meters at km/h -> seconds
+
+
+_DAY_SPEED_CACHE = {}
+
+
+def _day_speeds(day):
+    """Observed (route,hour)->speed for one day. Lazy dict; empty if absent."""
+    if day not in _DAY_SPEED_CACHE:
+        import duckdb
+        path = CLEAN / f"traversals_{day}.parquet"
+        if not path.exists():
+            _DAY_SPEED_CACHE[day] = ({}, {})
+        else:
+            con = duckdb.connect()
+            df = con.execute(f"""
+                SELECT route_id, hour_ist,
+                       SUM(dist_m) / NULLIF(SUM(dur_s), 0) * 3.6 AS sp FROM (
+                    SELECT *, COUNT(*) OVER (PARTITION BY route_id, hour_ist) n
+                    FROM read_parquet('{path.as_posix()}'))
+                GROUP BY 1, 2 HAVING MIN(n) >= 2
+            """).df()
+            df2 = con.execute(f"""
+                SELECT route_id,
+                       SUM(dist_m) / NULLIF(SUM(dur_s), 0) * 3.6 AS sp
+                FROM read_parquet('{path.as_posix()}') GROUP BY 1
+            """).df()
+            con.close()
+            _DAY_SPEED_CACHE[day] = (
+                {(str(r.route_id), int(r.hour_ist)): float(r.sp) for r in df.itertuples()},
+                {str(r.route_id): float(r.sp) for r in df2.itertuples()},
+            )
+    return _DAY_SPEED_CACHE[day]
+
+
+def ride_time(pat, i, j, start_epoch, day=None):
     """Sum leg seconds from pos i to j with hour refinement along the way."""
     t = start_epoch
     total = 0.0
     for k in range(i, j):
         h = int((t + 19800) // 3600 % 24)  # IST hour at leg start
         s = leg_seconds(pat["route_id"], pat["stops"][k], pat["stops"][k + 1],
-                        pat["leg_m"][k], h)
+                        pat["leg_m"][k], h, day=day)
         total += s
         t += s
     return total, t
-
-
-def leg_seconds(route_id, a, b, dist_m, hour):
-    e = E50.get((route_id, a, b, hour))
-    if e:
-        return float(e)
-    sp = RH.get((route_id, hour)) or RS.get(route_id) or CH.get(hour) or CH_DEFAULT
-    return dist_m * 3.6 / max(1.0, sp)   # meters at km/h -> seconds
 
 
 def resolve_place(q: str):
@@ -214,13 +255,18 @@ def _bus_leg_coords(pat, i, j):
 @app.get("/journeys")
 def journeys(fromq: str = Query(..., alias="from"),
              toq: str = Query(..., alias="to"),
-             depart: str | None = None):
+             depart: str | None = None,
+             asOf: str | None = None):
     o = resolve_place(fromq)
     d = resolve_place(toq)
     dep = dt.datetime.fromisoformat(depart) if depart else dt.datetime.now(IST)
     if dep.tzinfo is None:
         dep = dep.replace(tzinfo=IST)
     dep = dep.astimezone(IST)
+    day = None
+    if asOf:
+        t = dt.datetime.fromisoformat(asOf)
+        day = f"{t.year:04d}_{t.month:02d}_{t.day:02d}"
 
     o_near = nearest_stops(o["lat"], o["lng"]) or \
         nearest_stops(o["lat"], o["lng"], k=5, radius_km=6)
@@ -249,7 +295,7 @@ def journeys(fromq: str = Query(..., alias="from"),
                         break
                     wait_a = wait_minutes(pat["route_id"], oa["stop_id"])
                     board_epoch = dep_epoch + oa["walk_min"] * 60 + wait_a * 60
-                    ride_f, _ = ride_time(pat, i, j, board_epoch)
+                    ride_f, _ = ride_time(pat, i, j, board_epoch, day=day)
                     total = (oa["walk_min"] + wait_a + ride_f / 60 + db_["walk_min"])
                     options.append(dict(
                         _key=(pat["route_id"], oa["stop_id"]),
@@ -303,10 +349,10 @@ def journeys(fromq: str = Query(..., alias="from"),
                             break
                         wait_a = wait_minutes(A["route_id"], oa["stop_id"])
                         board_epoch = dep_epoch + oa["walk_min"] * 60 + wait_a * 60
-                        rideA, t_at_tr = ride_time(A, i, ia, board_epoch)
+                        rideA, t_at_tr = ride_time(A, i, ia, board_epoch, day=day)
                         wait_b = wait_minutes(B["route_id"], tstop)
                         t_board2 = t_at_tr + TRANSFER_BUFFER_S + wait_b * 60
-                        rideB, _ = ride_time(B, tb, j, t_board2)
+                        rideB, _ = ride_time(B, tb, j, t_board2, day=day)
                         total = (oa["walk_min"] + wait_a + rideA / 60
                                  + (TRANSFER_BUFFER_S + wait_b * 60) / 60
                                  + rideB / 60 + db_["walk_min"])
@@ -371,7 +417,7 @@ def journeys(fromq: str = Query(..., alias="from"),
         picked.append(op)
         if len(picked) == 3:
             break
-    return dict(options=picked)
+    return dict(options=picked, replay_day=day)
 
 
 @app.get("/pulse")
