@@ -60,6 +60,30 @@ def run(sb, cmd, timeout=None, tail=40):
     return out, err, r
 
 
+def pull_big(sb, remote_path, local_path, chunk_mb=16):
+    """Pull a large file in chunks (the SDK gateway caps single reads)."""
+    run(sb, f"rm -f /tmp/pullchunk_*; split -b {chunk_mb}M '{remote_path}' /tmp/pullchunk_ "
+            "&& ls -la --block-size=M /tmp/pullchunk_* | tail -3")
+    out, _, _ = run(sb, "ls /tmp/pullchunk_*")
+    names = [n.strip() for n in out.splitlines() if n.strip()]
+    if not names:
+        print(f"[{ts()}] pull_big({remote_path}): no chunks produced (file missing?)")
+        return None
+    local_path.parent.mkdir(parents=True, exist_ok=True)
+    got = 0
+    with open(local_path, "wb") as f:
+        for n in names:
+            blob = sb.read_files([n]).result().get(n)
+            if blob is None:
+                print(f"[{ts()}] WARNING chunk {n} missing")
+                continue
+            f.write(blob)
+            got += len(blob)
+    run(sb, "rm -f /tmp/pullchunk_*")
+    print(f"[{ts()}] pulled {remote_path} -> {local_path} ({got/1e6:.1f} MB in {len(names)} chunks)")
+    return local_path
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--days", nargs="*", default=[])
@@ -151,18 +175,14 @@ def main():
             run(sb, "pkill -f 'pipeline/0' 2>/dev/null; df -h /app | tail -1; "
                     "ls -la --block-size=M /app/data/clean/ | tail -6; "
                     "ls -la --block-size=M /app/data/raw/ 2>/dev/null | tail -3", tail=8)
-            # pull artifacts back
-            remote = sb.read_files([f"/app/data/clean/pings_{day}.parquet"]).result()
-            for path, blob in remote.items():
-                local = ROOT / "data/clean" / path.rsplit("/", 1)[-1]
-                local.parent.mkdir(parents=True, exist_ok=True)
-                local.write_bytes(blob)
-                print(f"[{ts()}] pulled {path} -> {local} "
-                      f"({len(blob)/1e6:.1f} MB)")
-            # try traversals too if produced
+            # pull artifacts back (chunked: gateway caps single-file reads)
+            pull_big(sb, f"/app/data/clean/pings_{day}.parquet",
+                     ROOT / "data/clean" / f"pings_{day}.parquet")
+            # traversals (small) if produced
             remote = sb.read_files([f"/app/data/clean/traversals_{day}.parquet"]).result()
             for path, blob in remote.items():
-                (ROOT / "data/clean" / path.rsplit("/", 1)[-1]).write_bytes(blob)
+                local = ROOT / "data/clean" / path.rsplit("/", 1)[-1]
+                local.write_bytes(blob)
                 print(f"[{ts()}] pulled {path} ({len(blob)/1e6:.1f} MB)")
             print(f"[{ts()}] ==== day {day} done in {(time.time()-d0)/60:.1f} min ====")
     finally:
