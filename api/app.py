@@ -139,6 +139,7 @@ route_hour = _load("route_hour.parquet")
 route_speed = _load("route_speed.parquet")
 city_hour = _load("city_hour.parquet")
 headway = _load("headway.parquet")
+headway_hour = _load("headway_hour.parquet")
 
 E50 = {(str(r.route_id), str(r.from_stop), str(r.to_stop), int(r.hour_ist)):
        (float(r.p50_s), float(getattr(r, "p10_s", r.p50_s)),
@@ -168,10 +169,17 @@ if CHR:
     CH_DEFAULT = float(np.median(list(CHR.values())))
 WAIT50 = {(str(r.route_id), str(r.stop_id)): float(r.h50_s)
           for r in headway.itertuples()} if len(headway) else {}
+WAIT50H = {(str(r.route_id), str(r.stop_id), int(getattr(r, "h_ist", 0))): float(r.h50_s)
+           for r in headway_hour.itertuples()} if len(headway_hour) else {}
 
 
-def wait_minutes(route_id, stop_id):
-    """Expected wait from observed headways (p50/2), clamped 2..15 min."""
+def wait_minutes(route_id, stop_id, hour=None):
+    """Expected wait from observed headways (p50/2), clamped 2..15 min.
+    Prefers the hour-specific headway, falls back to the pooled one."""
+    if hour is not None:
+        h = WAIT50H.get((str(route_id), str(stop_id), int(hour) % 24))
+        if h:
+            return min(15.0, max(2.0, h / 120.0))
     h = WAIT50.get((str(route_id), str(stop_id)))
     if h:
         return min(15.0, max(2.0, h / 120.0))
@@ -412,7 +420,8 @@ def journeys(fromq: str = Query(..., alias="from"),
                         continue
                     if len(options) >= MAX_OPTIONS:
                         break
-                    wait_a = wait_minutes(pat["route_id"], oa["stop_id"])
+                    bhour = int((dep_epoch + oa["walk_min"] * 60 + 19800) // 3600 % 24)
+                    wait_a = wait_minutes(pat["route_id"], oa["stop_id"], hour=bhour)
                     board_epoch = dep_epoch + oa["walk_min"] * 60 + wait_a * 60
                     ride_f, _, ride_lo, ride_hi = ride_time(
                         pat, i, j, board_epoch, day=day, win=win)
@@ -467,11 +476,13 @@ def journeys(fromq: str = Query(..., alias="from"),
                             continue
                         if len(options) >= MAX_OPTIONS:
                             break
-                        wait_a = wait_minutes(A["route_id"], oa["stop_id"])
+                        bhour = int((dep_epoch + oa["walk_min"] * 60 + 19800) // 3600 % 24)
+                        wait_a = wait_minutes(A["route_id"], oa["stop_id"], hour=bhour)
                         board_epoch = dep_epoch + oa["walk_min"] * 60 + wait_a * 60
                         rideA, t_at_tr, loA, hiA = ride_time(
                             A, i, ia, board_epoch, day=day, win=win)
-                        wait_b = wait_minutes(B["route_id"], tstop)
+                        thour = int((t_at_tr + 19800) // 3600 % 24)
+                        wait_b = wait_minutes(B["route_id"], tstop, hour=thour)
                         t_board2 = t_at_tr + TRANSFER_BUFFER_S + wait_b * 60
                         rideB, _, loB, hiB = ride_time(
                             B, tb, j, t_board2, day=day, win=win)
