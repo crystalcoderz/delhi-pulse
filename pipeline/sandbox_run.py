@@ -148,8 +148,9 @@ def main():
             else:
                 print(f"[{ts()}] {day}: no GTFS yet -> skipping stage 03 (03 needs the "
                       f"static GTFS from Transport Stack)")
-            run(sb, "rm -f /app/data/raw/*.db; df -h /app | tail -1; "
-                    "ls -la --block-size=M /app/data/clean/ | tail -5", tail=6)
+            run(sb, "pkill -f 'pipeline/0' 2>/dev/null; df -h /app | tail -1; "
+                    "ls -la --block-size=M /app/data/clean/ | tail -6; "
+                    "ls -la --block-size=M /app/data/raw/ 2>/dev/null | tail -3", tail=8)
             # pull artifacts back
             remote = sb.read_files([f"/app/data/clean/pings_{day}.parquet"]).result()
             for path, blob in remote.items():

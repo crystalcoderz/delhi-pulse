@@ -1,15 +1,16 @@
 """
 Stage 2: clean a day of raw GPS pings -> tidy parquet.
-  - dedupe (vehicle_id, timestamp)
-  - drop rows outside the Delhi bbox, junk lat/lng text, null trip_id
-  - drop teleports (implied speed > MAX_IMPLIED_KMH AND distance > JUMP_MIN_M)
-  - convert to IST, add hour/dow
+  - dedupe (trip, vehicle, ts)
+  - drop rows outside the Delhi bbox, junk lat/lng, null trip_id
+  - drop teleports (implied speed > MAX_IMPLIED_KMH)
+  - IST hour/dow
+Direct DuckDB-over-SQLite scan: no Python row loops, parallel columnar.
 Output: data/clean/pings_YYYY_MM_DD.parquet
 Usage:
   python pipeline/02_clean_pings.py --day 2026_10_15
 """
 import argparse
-import sqlite3
+import os
 from pathlib import Path
 
 import duckdb
@@ -29,104 +30,73 @@ def clean(day: str):
     ensure_dirs()
     db = day_db(day)
     out = CLEAN / f"pings_{day}.parquet"
+
+    mem = os.environ.get("DUCKDB_MEM", "4GB")
+    thr = os.environ.get("DUCKDB_THREADS", "4")
     con = duckdb.connect()
-    con.execute("SET memory_limit='6GB'")
-    con.execute("SET threads=4")
+    con.execute(f"SET memory_limit='{mem}'")
+    con.execute(f"SET threads={thr}")
     con.execute("SET temp_directory='.ducktmp'")
+    con.execute("INSTALL sqlite; LOAD sqlite;")
+    con.execute(f"ATTACH '{db.as_posix()}' AS src (TYPE sqlite)")
 
-    con.execute("""
-        CREATE TABLE raw(vehicle_id VARCHAR, lat DOUBLE, lng DOUBLE, speed DOUBLE,
-                         route_id BIGINT, trip_id VARCHAR, ts_utc BIGINT)
-    """)
-
-    src = sqlite3.connect(db)
-    cur = src.cursor()
-    cur.execute("""SELECT vehicle_id,
-                          CAST(lat AS DOUBLE), CAST(lng AS DOUBLE),
-                          speed, CAST(route_id AS BIGINT),
-                          trip_id,
-                          CAST("timestamp" AS BIGINT)
-                   FROM vehicle_feed""")
-    n_in = 0
-    INS = "INSERT INTO raw VALUES (?, ?, ?, ?, ?, ?, ?)"
-    while True:
-        rows = cur.fetchmany(500_000)
-        if not rows:
-            break
-        con.executemany(INS, rows)
-        n_in += len(rows)
-    src.close()
-    print(f"[02] loaded {n_in:,} rows from {db.name}")
+    n_in = con.execute("SELECT COUNT(*) FROM src.vehicle_feed").fetchone()[0]
 
     lat0, lng0, lat1, lng1 = BBOX
-    con.execute(f"""
-        CREATE TABLE clean AS
-        WITH ded AS (
-            SELECT *, ROW_NUMBER() OVER (
-                       PARTITION BY trip_id, vehicle_id, ts_utc ORDER BY speed DESC
-                   ) AS rn
-            FROM raw
-            WHERE lat BETWEEN {lat0} AND {lat1}
-              AND lng BETWEEN {lng0} AND {lng1}
-              AND trip_id IS NOT NULL
-        ),
-        base AS (
-            SELECT vehicle_id, trip_id, route_id, lat, lng, speed,
-                   ts_utc, ts_utc + {IST_OFFSET_S} AS ts_ist
-            FROM ded WHERE rn = 1
-        ),
-        seq AS (
-            SELECT *,
-                   lead(lat)  OVER w AS nlat,
-                   lead(lng)  OVER w AS nlng,
-                   lead(ts_utc) OVER w AS nts
-            FROM base
-            WINDOW w AS (PARTITION BY trip_id, vehicle_id ORDER BY ts_utc)
-        )
-        SELECT trip_id, vehicle_id, route_id, lat, lng, speed, ts_utc,
-               to_timestamp(ts_utc + {IST_OFFSET_S}) AS dt_ist,
-               hour(to_timestamp(ts_utc + {IST_OFFSET_S})) AS hour_ist,
-               isodow(to_timestamp(ts_utc + {IST_OFFSET_S})) AS dow_ist,
-               nlat, nlng, nts
-        FROM seq
-    """)
-
-    # teleport filter: only kill the physically impossible AND far jumps
-    con.execute(f"""
-        CREATE TABLE clean2 AS
-        SELECT trip_id, vehicle_id, route_id, lat, lng, speed, ts_utc,
-               dt_ist, hour_ist, dow_ist
-        FROM (
-            SELECT *,
-                   CASE WHEN nts > ts_utc THEN
-                        sqrt( power((nlng-lng)*111320*cos(radians((nlat+lat)/2)),2)
-                            + power((nlat-lat)*110540,2) )
-                        / (nts - ts_utc) * 3.6
-                   ELSE NULL END AS kmh_next
-            FROM clean
-        ) t
-        WHERE kmh_next IS NULL
-           OR (kmh_next <= {MAX_IMPLIED_KMH}
-               AND sqrt( power((nlng-lng)*111320*cos(radians((nlat+lat)/2)),2)
-                       + power((nlat-lat)*110540,2) ) <= {JUMP_MIN_M})
-           OR kmh_next <= {MAX_IMPLIED_KMH}
-    """)
-
-    # drop tiny trips, then write
-    con.execute(f"""
+    n_out = con.execute(f"""
         COPY (
-            SELECT c.* FROM clean2 c
-            JOIN (SELECT trip_id, vehicle_id FROM clean2
-                  GROUP BY trip_id, vehicle_id HAVING COUNT(*) >= 6) k
-              ON c.trip_id = k.trip_id AND c.vehicle_id = k.vehicle_id
-        ) TO '{str(out).replace(chr(92), "/")}'
+            WITH base AS (
+                SELECT trip_id, vehicle_id,
+                       TRY_CAST(route_id AS BIGINT) AS route_id,
+                       TRY_CAST(lat AS DOUBLE) AS lat,
+                       TRY_CAST(lng AS DOUBLE) AS lng,
+                       speed,
+                       TRY_CAST("timestamp" AS BIGINT) AS ts_utc
+                FROM src.vehicle_feed
+                WHERE lat IS NOT NULL AND "timestamp" IS NOT NULL
+                  AND trip_id IS NOT NULL
+            ),
+ inbox AS (
+                SELECT * FROM base
+                WHERE lat BETWEEN {lat0} AND {lat1}
+                  AND lng BETWEEN {lng0} AND {lng1}
+            ),
+            ded AS (
+                SELECT *, ROW_NUMBER() OVER (
+                           PARTITION BY trip_id, vehicle_id, ts_utc
+                           ORDER BY speed DESC NULLS LAST) AS rn
+                FROM inbox
+            ),
+            seq AS (
+                SELECT trip_id, vehicle_id, route_id, lat, lng, speed, ts_utc,
+                       lead(lat) OVER w AS nlat,
+                       lead(lng) OVER w AS nlng,
+                       lead(ts_utc) OVER w AS nts
+                FROM ded WHERE rn = 1
+                WINDOW w AS (PARTITION BY trip_id, vehicle_id ORDER BY ts_utc)
+            )
+            SELECT c.trip_id, c.vehicle_id, c.route_id, c.lat, c.lng, c.speed,
+                   c.ts_utc,
+                   to_timestamp(c.ts_utc + {IST_OFFSET_S}) AS dt_ist,
+                   hour(to_timestamp(c.ts_utc + {IST_OFFSET_S})) AS hour_ist,
+                   isodow(to_timestamp(c.ts_utc + {IST_OFFSET_S})) AS dow_ist
+            FROM seq c
+            WHERE (c.nts IS NULL OR c.nts <= c.ts_utc)          -- last row / dup ts
+               OR (c.nts > c.ts_utc AND
+                   sqrt( power((c.nlng-c.lng)*111320.0*cos(radians((c.nlat+c.lat)/2.0)),2)
+                       + power((c.nlat-c.lat)*110540.0,2) )
+                   <= GREATEST({JUMP_MIN_M}, (c.nts-c.ts_utc) * {MAX_IMPLIED_KMH} / 3.6))
+        ) TO '{out.as_posix()}'
         (FORMAT PARQUET, COMPRESSION ZSTD)
-    """)
-    n_out = con.execute("SELECT COUNT(*) FROM clean2").fetchone()[0]
-    trips = con.execute("SELECT COUNT(DISTINCT trip_id) FROM clean2").fetchone()[0]
+    """).fetchone()
+
+    n_out = con.execute(
+        f"SELECT COUNT(*) FROM read_parquet('{out.as_posix()}')").fetchone()[0]
+    trips = con.execute(
+        f"SELECT COUNT(DISTINCT trip_id) FROM read_parquet('{out.as_posix()}')").fetchone()[0]
     con.close()
     print(f"[02] kept {n_out:,}/{n_in:,} rows ({100*n_out/max(1,n_in):.1f}%), "
-          f"{trips:,} trips -> {out.name}")
+          f"{trips:,} trips -> {out.name} ({out.stat().st_size/1e6:.0f} MB)")
 
 
 if __name__ == "__main__":
