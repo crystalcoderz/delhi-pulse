@@ -51,7 +51,7 @@ def main():
         for r in df.itertuples(index=False):
             d = dict(zip(df.columns, r))
             rows.append(tuple(d.get(c) for c in cols))
-        B = 400
+        B = 250
         for i in range(0, len(rows), B):
             values = ", ".join(
                 "(" + ", ".join(esc(v) for v in row) + ")" for row in rows[i:i + B])
@@ -99,7 +99,7 @@ def main():
                 continue
             rows_geo.append((rid, str(_nmap.get(rid, rid))[:60],
                              _json.dumps(coords)))
-        B = 50
+        B = 8   # geo rows carry multi-KB coordinate JSON; keep statements small
         for i in range(0, len(rows_geo), B):
             vals = ", ".join(
                 f"('{r}', '{n}', '{c}')" for r, n, c in rows_geo[i:i + B])
@@ -117,7 +117,7 @@ def main():
         out.append("DELETE FROM wait_headway;")
         rows_w = [(str(r.route_id), int(r.hour_ist), float(r.headway_s),
                    float(r.n_services_per_day)) for r in wh.itertuples()]
-        B = 400
+        B = 150
         for i in range(0, len(rows_w), B):
             vals = ", ".join(f"('{r}',{h},{round(s,1)},{round(n,2)})"
                              for r, h, s, n in rows_w[i:i + B])
