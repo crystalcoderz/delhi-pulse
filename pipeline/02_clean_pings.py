@@ -94,6 +94,35 @@ def clean(day: str):
         f"SELECT COUNT(*) FROM read_parquet('{out.as_posix()}')").fetchone()[0]
     trips = con.execute(
         f"SELECT COUNT(DISTINCT trip_id) FROM read_parquet('{out.as_posix()}')").fetchone()[0]
+
+    # ---- drop-reason stats (provenance for the technical note) ----
+    try:
+        import json
+        lat0_, lng0_, lat1_, lng1_ = BBOX
+        s = con.execute(f"""
+            SELECT
+              COUNT(*) AS n_total,
+              SUM(CASE WHEN trip_id IS NULL OR TRIM(trip_id)='' THEN 1 ELSE 0 END) AS n_no_trip,
+              SUM(CASE WHEN "timestamp" IS NULL OR TRIM("timestamp")='' THEN 1 ELSE 0 END) AS n_bad_ts,
+              SUM(CASE WHEN TRIM(lat)='' OR TRIM(lng)='' THEN 1 ELSE 0 END) AS n_bad_latlng,
+              SUM(CASE WHEN TRY_CAST(lat AS DOUBLE) BETWEEN {lat0_} AND {lat1_}
+                        AND TRY_CAST(lng AS DOUBLE) BETWEEN {lng0_} AND {lng1_}
+                   THEN 1 ELSE 0 END) AS n_in_bbox,
+              COUNT(DISTINCT trip_id || '|' || vehicle_id || '|' || "timestamp") AS n_distinct_keys
+            FROM src.vehicle_feed
+        """).df().iloc[0].to_dict()
+        stats = dict(day=day, n_total=int(s["n_total"] or 0),
+                    n_no_trip=int(s["n_no_trip"] or 0),
+                    n_bad_ts=int(s["n_bad_ts"] or 0),
+                    n_bad_latlng=int(s["n_bad_latlng"] or 0),
+                    n_in_bbox=int(s["n_in_bbox"] or 0),
+                    n_distinct_keys=int(s["n_distinct_keys"] or 0),
+                    n_kept=int(n_out),
+                    pct_kept=round(100.0 * n_out / max(1, s["n_total"] or 1), 1))
+        (CLEAN / f"stats_{day}.json").write_text(json.dumps(stats, indent=2))
+        print(f"[02] stats: {json.dumps(stats)}")
+    except Exception as ex:
+        print(f"[02] stats collection failed (non-fatal): {ex}")
     con.close()
     print(f"[02] kept {n_out:,}/{n_in:,} rows ({100*n_out/max(1,n_in):.1f}%), "
           f"{trips:,} trips -> {out.name} ({out.stat().st_size/1e6:.0f} MB)")

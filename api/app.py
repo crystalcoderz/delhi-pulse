@@ -128,7 +128,9 @@ route_speed = _load("route_speed.parquet")
 city_hour = _load("city_hour.parquet")
 headway = _load("headway.parquet")
 
-E50 = {(str(r.route_id), str(r.from_stop), str(r.to_stop), int(r.hour_ist)): float(r.p50_s)
+E50 = {(str(r.route_id), str(r.from_stop), str(r.to_stop), int(r.hour_ist)):
+       (float(r.p50_s), float(getattr(r, "p10_s", r.p50_s)),
+        float(getattr(r, "p90_s", r.p50_s)))
        for r in edge_hour.itertuples()} if len(edge_hour) else {}
 RH = {(str(r.route_id), int(r.hour_ist)): float(r.speed_kmh)
       for r in route_hour.itertuples()} if len(route_hour) else {}
@@ -151,9 +153,10 @@ def wait_minutes(route_id, stop_id):
 
 
 def leg_seconds(route_id, a, b, dist_m, hour, day=None):
+    """Median traversal seconds for one leg."""
     e = E50.get((route_id, a, b, hour))
     if e and day is None:
-        return float(e)
+        return e[0]
     if day is not None:
         drh, dravg = _day_speeds(day)
         sp = (drh.get((route_id, hour)) or dravg.get(route_id)
@@ -197,16 +200,26 @@ def _day_speeds(day):
 
 
 def ride_time(pat, i, j, start_epoch, day=None):
-    """Sum leg seconds from pos i to j with hour refinement along the way."""
+    """Sum leg seconds i..j with hour refinement.
+    Returns (total_s, end_epoch, p10_s, p90_s)."""
     t = start_epoch
     total = 0.0
+    lo = hi = 0.0
     for k in range(i, j):
         h = int((t + 19800) // 3600 % 24)  # IST hour at leg start
-        s = leg_seconds(pat["route_id"], pat["stops"][k], pat["stops"][k + 1],
-                        pat["leg_m"][k], h, day=day)
+        a, b = pat["stops"][k], pat["stops"][k + 1]
+        dist = pat["leg_m"][k]
+        e = E50.get((pat["route_id"], a, b, h)) if day is None else None
+        s = leg_seconds(pat["route_id"], a, b, dist, h, day=day)
         total += s
         t += s
-    return total, t
+        if e:
+            lo += e[1]
+            hi += e[2]
+        else:
+            lo += s * 0.85
+            hi += s * 1.35
+    return total, t, lo, hi
 
 
 def resolve_place(q: str):
@@ -295,7 +308,7 @@ def journeys(fromq: str = Query(..., alias="from"),
                         break
                     wait_a = wait_minutes(pat["route_id"], oa["stop_id"])
                     board_epoch = dep_epoch + oa["walk_min"] * 60 + wait_a * 60
-                    ride_f, _ = ride_time(pat, i, j, board_epoch, day=day)
+                    ride_f, _, ride_lo, ride_hi = ride_time(pat, i, j, board_epoch, day=day)
                     total = (oa["walk_min"] + wait_a + ride_f / 60 + db_["walk_min"])
                     options.append(dict(
                         _key=(pat["route_id"], oa["stop_id"]),
@@ -324,9 +337,9 @@ def journeys(fromq: str = Query(..., alias="from"),
                         ],
                         eta_p50_min=round(total, 1),
                         eta_p10_min=round(oa["walk_min"] + wait_a
-                                          + ride_f * 0.85 / 60, 1),
+                                          + ride_lo / 60, 1),
                         eta_p90_min=round(oa["walk_min"] + wait_a
-                                          + ride_f * 1.35 / 60, 1),
+                                          + ride_hi / 60, 1),
                         usual_p50_min=round(total, 1),
                         confidence="v0.5-transfers",
                     ))
@@ -349,10 +362,10 @@ def journeys(fromq: str = Query(..., alias="from"),
                             break
                         wait_a = wait_minutes(A["route_id"], oa["stop_id"])
                         board_epoch = dep_epoch + oa["walk_min"] * 60 + wait_a * 60
-                        rideA, t_at_tr = ride_time(A, i, ia, board_epoch, day=day)
+                        rideA, t_at_tr, loA, hiA = ride_time(A, i, ia, board_epoch, day=day)
                         wait_b = wait_minutes(B["route_id"], tstop)
                         t_board2 = t_at_tr + TRANSFER_BUFFER_S + wait_b * 60
-                        rideB, _ = ride_time(B, tb, j, t_board2, day=day)
+                        rideB, _, loB, hiB = ride_time(B, tb, j, t_board2, day=day)
                         total = (oa["walk_min"] + wait_a + rideA / 60
                                  + (TRANSFER_BUFFER_S + wait_b * 60) / 60
                                  + rideB / 60 + db_["walk_min"])
@@ -397,10 +410,10 @@ def journeys(fromq: str = Query(..., alias="from"),
                             eta_p50_min=round(total, 1),
                             eta_p10_min=round(oa["walk_min"]
                                               + wait_a + TRANSFER_BUFFER_S / 60 + wait_b
-                                              + (rideA + rideB) * 0.85 / 60, 1),
+                                              + (loA + loB) / 60, 1),
                             eta_p90_min=round(oa["walk_min"]
                                               + wait_a + TRANSFER_BUFFER_S / 60 + wait_b
-                                              + (rideA + rideB) * 1.35 / 60, 1),
+                                              + (hiA + hiB) / 60, 1),
                             usual_p50_min=round(total, 1),
                             confidence="v0.5-transfers",
                         ))

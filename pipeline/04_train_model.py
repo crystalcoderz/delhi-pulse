@@ -36,7 +36,9 @@ def main():
 
     edge_hour = con.execute(f"""
         SELECT route_id, from_stop, to_stop, hour_ist,
-               quantile_cont(dur_s, 0.5) AS p50_s,
+               quantile_cont(dur_s, 0.10) AS p10_s,
+               quantile_cont(dur_s, 0.50) AS p50_s,
+               quantile_cont(dur_s, 0.90) AS p90_s,
                COUNT(*) AS n
         FROM read_parquet([{files}])
         GROUP BY 1,2,3,4 HAVING COUNT(*) >= 3
