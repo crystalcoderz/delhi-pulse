@@ -22,10 +22,11 @@ def dist_m(lat0, lng0, lat1, lng1):
 
 
 class LiveLayer:
-    def __init__(self, url=None, poll_s=10.0, keep_s=2700.0):
+    def __init__(self, url=None, poll_s=10.0, keep_s=2700.0, headers=None):
         self.url = url
         self.poll_s = poll_s
         self.keep_s = keep_s
+        self.headers = headers or {}          # e.g. {"x-api-key": ...}
         self.store = collections.defaultdict(collections.deque)
         # vehicle_id -> deque of (ts, lat, lng, route_id)
         self.lock = threading.Lock()
@@ -51,7 +52,7 @@ class LiveLayer:
             time.sleep(self.poll_s)
 
     def fetch_once(self):
-        r = httpx.get(self.url, timeout=20.0)
+        r = httpx.get(self.url, timeout=20.0, headers=self.headers)
         feed = gtfs_realtime_pb2.FeedMessage()
         feed.ParseFromString(r.content)
         added = 0

@@ -41,11 +41,13 @@ app = FastAPI(title="Delhi Pulse", version="0.1.0")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"],
                    allow_headers=["*"])
 
-# live layer: starts only when GTFS_RT_URL is present in the environment
+# live layer: starts when GTFS_RT_URL is present in the environment
 from .live import LIVE as LIVE_LIVE  # noqa: E402
 _rt_url = os.environ.get("GTFS_RT_URL")
 if _rt_url:
     LIVE_LIVE.url = _rt_url
+    if os.environ.get("GTFS_RT_API_KEY"):
+        LIVE_LIVE.headers = {"x-api-key": os.environ["GTFS_RT_API_KEY"]}
     LIVE_LIVE.start()
 
 # ---------------------------------------------------------------- static GTFS
