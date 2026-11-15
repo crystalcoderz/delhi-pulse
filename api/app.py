@@ -394,7 +394,8 @@ def _bus_leg_coords(pat, i, j):
 def journeys(fromq: str = Query(..., alias="from"),
              toq: str = Query(..., alias="to"),
              depart: str | None = None,
-             asOf: str | None = None):
+             asOf: str | None = None,
+             max_options: int = Query(3, alias="max", ge=1, le=8)):
     o = resolve_place(fromq)
     d = resolve_place(toq)
     dep = dt.datetime.fromisoformat(depart) if depart else dt.datetime.now(IST)
@@ -519,7 +520,7 @@ def journeys(fromq: str = Query(..., alias="from"),
                     op["total_min"] - u["total_min"], 1)
                 op["usual_wait_min"] = u["wait_min"]
             picked.append(op)
-            if len(picked) == 3:
+            if len(picked) >= max_options:
                 break
         return dict(options=picked, replay_day=strday, replay_mode=replay_mode)
 

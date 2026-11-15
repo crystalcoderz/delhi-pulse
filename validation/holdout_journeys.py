@@ -33,6 +33,8 @@ def main():
     ap.add_argument("--n", type=int, default=300)
     ap.add_argument("--seed", type=int, default=11)
     ap.add_argument("--days", nargs="*", default=None)
+    ap.add_argument("--max", type=int, default=6,
+                    help="planner max_options for replay queries")
     a = ap.parse_args()
 
     if a.days:
@@ -55,7 +57,8 @@ def main():
     with httpx.Client(base_url="http://127.0.0.1:8010", timeout=30.0) as c:
         for r in df.itertuples():
             q = (f"/journeys?from=stop:{r.from_stop}&to=stop:{r.to_stop}"
-                 f"&depart=2026-10-20T{int(r.hour_ist):02d}:00:00%2B05:30")
+                 f"&depart=2026-10-20T{int(r.hour_ist):02d}:00:00%2B05:30"
+                 f"&max={a.max}")
             try:
                 res = c.get(q).json()
             except Exception as e:
