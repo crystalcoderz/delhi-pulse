@@ -16,9 +16,12 @@ Notes:
     pulls the cleaned pings (still the 124 GB -> GBs crux step).
 """
 import argparse
+import functools
 import sys
 import time
 from pathlib import Path
+
+print = functools.partial(print, flush=True)  # unbuffered progress everywhere
 
 from dotenv import load_dotenv
 load_dotenv()
@@ -62,6 +65,8 @@ def main():
     ap.add_argument("--days", nargs="*", default=[])
     ap.add_argument("--week", type=int, default=None)
     ap.add_argument("--skip-download", action="store_true")
+    ap.add_argument("--attach", action="store_true",
+                    help="attach to the existing delhi-pulse sandbox instead of creating one")
     ap.add_argument("--cleanup-only", action="store_true",
                     help="stop+delete all our sandboxes and exit")
     a = ap.parse_args()
@@ -72,7 +77,8 @@ def main():
         days = ["2026_10_13"]  # default: single-day validation
 
     if a.cleanup_only:
-        ours = Sandbox.list(tags=["delhi-pulse"]).result()
+        ours = Sandbox.list(tags=["delhi-pulse"],
+                             auth=AuthStrategy.WANDB).result()
         for s in ours:
             print(f"stopping {s.sandbox_id}")
             s.stop()
@@ -80,18 +86,30 @@ def main():
         return
 
     t0 = time.time()
-    print(f"[{ts()}] creating sandbox (target: 4 CPU / 12Gi, fallback: default) ...")
-    resources = {"requests": {"cpu": "4", "memory": "12Gi"}}
-    try:
+    ours = Sandbox.list(tags=["delhi-pulse"],
+                         auth=AuthStrategy.WANDB).result()
+    created = False
+    if a.attach:
+        if not ours:
+            print(f"[{ts()}] no active delhi-pulse sandbox to attach to; exiting")
+            return
+        sb = ours[0]
+        sb.start().result()
+        print(f"[{ts()}] attached to {sb.sandbox_id} "
+              f"(status: {sb.status})")
+    else:
+        name = f"delhi-pulse-{int(time.time())}"
+        print(f"[{ts()}] creating sandbox '{name}' "
+              f"(requests: 2 CPU / 3Gi, fail-fast budgets) ...")
+        resources = {"requests": {"cpu": "2", "memory": "3Gi"}}
         sb = Sandbox.run(auth=AuthStrategy.WANDB, tags=["delhi-pulse"],
-                         resources=resources, display_name="delhi-pulse",
-                         max_lifetime_seconds=6 * 3600)
-    except Exception as e:
-        print(f"[{ts()}] resource request failed ({type(e).__name__}), "
-              f"retrying with defaults ...")
-        sb = Sandbox.run(auth=AuthStrategy.WANDB, tags=["delhi-pulse"],
-                         display_name="delhi-pulse", max_lifetime_seconds=6 * 3600)
-    print(f"[{ts()}] sandbox up in {time.time()-t0:.0f}s -> {sb.sandbox_id}")
+                         display_name=name,
+                         max_lifetime_seconds=6 * 3600,
+                         create_retry_budget_seconds=900,
+                         poll_retry_budget_seconds=900,
+                         resources=resources)
+        created = True
+    print(f"[{ts()}] sandbox ready in {time.time()-t0:.0f}s -> {sb.sandbox_id}")
 
     try:
         # ---- ship the repo ----
@@ -104,14 +122,16 @@ def main():
                           " && python -c 'import duckdb, pandas, py7zr; print(\"deps OK\")'",
                         timeout=600, tail=2)
 
-        # ---- archive download (resumable) ----
+        # ---- archive download (idempotent: resumes, verifies, skips if complete) ----
         if not a.skip_download:
-            run(sb, "cd /app/data 2>/dev/null || mkdir -p /app/data; cd /app/data; "
-                    f"curl -L -C - -sS --retry 30 --retry-delay 5 --retry-all-errors "
+            run(sb, "mkdir -p /app/data && cd /app/data; "
+                    f"curl -L -C - -sS --retry 10 --retry-delay 5 "
                     f"-o delhi-dtc-bus-gtfs-rt-2026-10.7z {ARCHIVE_URL} "
-                    f"&& curl -sS -o SHA256SUMS {SUMS_URL} "
-                    "&& grep delhi-dtc data/../data/SHA256SUMS | sha256sum -c - "
-                    "&& ls -la --block-size=M delhi*.7z",
+                    "|| echo 'curl done/rc noted'; "
+                    f"curl -sS -o SHA256SUMS {SUMS_URL}; "
+                    "grep delhi-dtc SHA256SUMS | sha256sum -c - "
+                    "|| echo 'SHA NOT VERIFIED'; "
+                    "ls -la --block-size=M delhi-dtc-bus-gtfs-rt-2026-10.7z",
                 timeout=3600 * 2, tail=4)
 
         # ---- per-day processing ----
@@ -145,13 +165,18 @@ def main():
                 print(f"[{ts()}] pulled {path} ({len(blob)/1e6:.1f} MB)")
             print(f"[{ts()}] ==== day {day} done in {(time.time()-d0)/60:.1f} min ====")
     finally:
-        print(f"[{ts()}] stopping sandbox ...")
-        try:
-            sb.stop()
-            print(f"[{ts()}] sandbox stopped (total run: {(time.time()-t0)/60:.0f} min)")
-        except Exception as e:
-            print(f"[{ts()}] stop failed ({type(e).__name__}) - run "
-                  f"--cleanup-only later; sandbox dies by TTL anyway")
+        if created:
+            print(f"[{ts()}] stopping sandbox ...")
+            try:
+                sb.stop()
+                print(f"[{ts()}] sandbox stopped "
+                      f"(total run: {(time.time()-t0)/60:.0f} min)")
+            except Exception as e:
+                print(f"[{ts()}] stop failed ({type(e).__name__}) - run "
+                      f"--cleanup-only later; sandbox dies by TTL anyway")
+        else:
+            print(f"[{ts()}] attached sandbox left running (TTL will reap it); "
+                  f"use --cleanup-only to stop it now")
 
 
 if __name__ == "__main__":

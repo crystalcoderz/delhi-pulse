@@ -106,6 +106,22 @@ def main():
                                        stop_desc="", stop_lat=lat, stop_lon=lng, location_type=0))
                 pattern_stops.append((sid, dist[si]))
 
+            # shared junction: all three route paths cross near (946, 394).
+            # Insert SHARED1 at THIS route's own nearest path point, so legs
+            # stay realistic (no phantom detours) while every pattern shares
+            # one transfer stop - like the real 10.5k-stop network.
+            import bisect
+            jx, jy = 946.0, 394.0
+            sj = int(np.argmin((sx - jx) ** 2 + (sy - jy) ** 2))
+            s_junc = float(dist[sj])
+            pos = bisect.bisect_right([ps for _, ps in pattern_stops], s_junc)
+            pattern_stops.insert(pos, ("SHARED1", s_junc))
+            if not any(r["stop_id"] == "SHARED1" for r in stops_rows):
+                lat, lng = xy2ll(sx[sj], sy[sj])
+                stops_rows.append(dict(stop_id="SHARED1", stop_code="",
+                                       stop_name="Shared Junction", stop_desc="",
+                                       stop_lat=lat, stop_lon=lng, location_type=0))
+
             # trips through the day, hourly-ish headways with rush-hour extras
             departures = list(range(6 * 3600, 22 * 3600, 3600))
             departures += [8 * 3600 + 1800, 10 * 3600 + 1800, 18 * 3600 + 1800]

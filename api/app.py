@@ -103,6 +103,7 @@ edge_hour = _load("edge_hour.parquet")
 route_hour = _load("route_hour.parquet")
 route_speed = _load("route_speed.parquet")
 city_hour = _load("city_hour.parquet")
+headway = _load("headway.parquet")
 
 E50 = {(str(r.route_id), str(r.from_stop), str(r.to_stop), int(r.hour_ist)): float(r.p50_s)
        for r in edge_hour.itertuples()} if len(edge_hour) else {}
@@ -111,6 +112,29 @@ RH = {(str(r.route_id), int(r.hour_ist)): float(r.speed_kmh)
 RS = {str(r.route_id): float(r.speed_kmh) for r in route_speed.itertuples()} if len(route_speed) else {}
 CH = {int(r.hour_ist): r.speed_kmh for r in city_hour.itertuples()} if len(city_hour) else {}
 CH_DEFAULT = float(np.median(list(CH.values()))) if CH else 15.0
+WAIT50 = {(str(r.route_id), str(r.stop_id)): float(r.h50_s)
+          for r in headway.itertuples()} if len(headway) else {}
+
+
+def wait_minutes(route_id, stop_id):
+    """Expected wait from observed headways (p50/2), clamped 2..15 min."""
+    h = WAIT50.get((str(route_id), str(stop_id)))
+    if h:
+        return min(15.0, max(2.0, h / 120.0))
+    return DEFAULT_WAIT_S / 60.0
+
+
+def ride_time(pat, i, j, start_epoch):
+    """Sum leg seconds from pos i to j with hour refinement along the way."""
+    t = start_epoch
+    total = 0.0
+    for k in range(i, j):
+        h = int((t + 19800) // 3600 % 24)  # IST hour at leg start
+        s = leg_seconds(pat["route_id"], pat["stops"][k], pat["stops"][k + 1],
+                        pat["leg_m"][k], h)
+        total += s
+        t += s
+    return total, t
 
 
 def leg_seconds(route_id, a, b, dist_m, hour):
@@ -174,7 +198,6 @@ def journeys(fromq: str = Query(..., alias="from"),
     if dep.tzinfo is None:
         dep = dep.replace(tzinfo=IST)
     dep = dep.astimezone(IST)
-    hour0 = dep.hour
 
     o_near = nearest_stops(o["lat"], o["lng"]) or \
         nearest_stops(o["lat"], o["lng"], k=5, radius_km=6)
@@ -183,7 +206,14 @@ def journeys(fromq: str = Query(..., alias="from"),
     if not o_near or not d_near:
         raise HTTPException(404, "no plausible stop access found")
 
+    def route_name(rid):
+        return routes_short.get(str(rid), str(rid))
+
+    TRANSFER_BUFFER_S = 120.0
     options = []
+    dep_epoch = dep.timestamp()
+
+    # ---------------- direct options ----------------
     for oa in o_near:
         for db_ in d_near:
             for pi, i in STOP_MEMBER.get(oa["stop_id"], []):
@@ -191,53 +221,115 @@ def journeys(fromq: str = Query(..., alias="from"),
                 for pj, j in STOP_MEMBER.get(db_["stop_id"], []):
                     if pi != pj or j <= i:
                         continue
-                    board_epoch = dep.timestamp() + oa["walk_min"] * 60 + DEFAULT_WAIT_S
-                    t_cum = board_epoch
-                    ride = 0.0
-                    for k in range(i, j):
-                        seg_h = int((t_cum + 19800) // 3600 % 24)  # IST hour at leg start
-                        s_leg = leg_seconds(pat["route_id"], pat["stops"][k],
-                                            pat["stops"][k + 1], pat["leg_m"][k], seg_h)
-                        ride += s_leg
-                        t_cum += s_leg
-                    ride_f = ride
-                    total = oa["walk_min"] * 60 + DEFAULT_WAIT_S + ride_f + db_["walk_min"] * 60
+                    wait_a = wait_minutes(pat["route_id"], oa["stop_id"])
+                    board_epoch = dep_epoch + oa["walk_min"] * 60 + wait_a * 60
+                    ride_f, _ = ride_time(pat, i, j, board_epoch)
+                    total = (oa["walk_min"] + wait_a + ride_f / 60 + db_["walk_min"])
                     options.append(dict(
                         _key=(pat["route_id"], oa["stop_id"]),
-                        total_min=round(total / 60, 1),
+                        transfers=0,
+                        total_min=round(total, 1),
                         walk_o=oa["walk_min"], walk_d=db_["walk_min"],
-                        wait_min=DEFAULT_WAIT_S / 60,
+                        wait_min=round(wait_a, 1),
                         ride_min=round(ride_f / 60, 1),
-                        route_id=pat["route_id"],
-                        route_name=routes_short.get(pat["route_id"], str(pat["route_id"])),
+                        route_id=str(pat["route_id"]),
+                        route_name=route_name(pat["route_id"]),
                         board=oa["stop_id"], board_name=oa["name"],
                         alight=db_["stop_id"], alight_name=db_["name"],
                         board_at=(dep + dt.timedelta(
-                            minutes=oa["walk_min"] + DEFAULT_WAIT_S / 60)).isoformat(),
-                        arrive=(dep + dt.timedelta(
-                            minutes=total / 60)).isoformat(),
+                            minutes=oa["walk_min"] + wait_a)).isoformat(),
+                        arrive=(dep + dt.timedelta(minutes=total)).isoformat(),
                         legs=[
                             dict(type="walk", minutes=oa["walk_min"],
                                  coords=[[o["lat"], o["lng"]],
                                          [oa["lat"], oa["lng"]]]),
                             dict(type="bus", minutes=round(ride_f / 60, 1),
-                                 route=routes_short.get(pat["route_id"], str(pat["route_id"])),
+                                 route=route_name(pat["route_id"]),
                                  stops=_bus_leg_coords(pat, i, j)),
                             dict(type="walk", minutes=db_["walk_min"],
                                  coords=[[db_["lat"], db_["lng"]],
                                          [d["lat"], d["lng"]]]),
                         ],
-                        eta_p50_min=round(total / 60, 1),
-                        eta_p10_min=round((oa["walk_min"] + DEFAULT_WAIT_S / 60
-                                           + ride_f * 0.85) / 60, 1),
-                        eta_p90_min=round((oa["walk_min"] + DEFAULT_WAIT_S / 60
-                                           + ride_f * 1.35) / 60, 1),
-                        usual_p50_min=round(total / 60, 1),
-                        confidence="v0-medians",
+                        eta_p50_min=round(total, 1),
+                        eta_p10_min=round(oa["walk_min"] + wait_a
+                                          + ride_f * 0.85 / 60, 1),
+                        eta_p90_min=round(oa["walk_min"] + wait_a
+                                          + ride_f * 1.35 / 60, 1),
+                        usual_p50_min=round(total, 1),
+                        confidence="v0.5-transfers",
                     ))
 
+    # ---------------- one-transfer options ----------------
+    for oa in o_near:
+        for db_ in d_near:
+            for pi, i in STOP_MEMBER.get(oa["stop_id"], []):
+                A = PAT[pi]
+                apos = {s: k for k, s in enumerate(A["stops"])}
+                for pj, j in STOP_MEMBER.get(db_["stop_id"], []):
+                    B = PAT[pj]
+                    if pi == pj or A["route_id"] == B["route_id"]:
+                        continue
+                    for tb, tstop in enumerate(B["stops"]):
+                        ia = apos.get(tstop)
+                        if ia is None or ia <= i or tb >= j:
+                            continue
+                        wait_a = wait_minutes(A["route_id"], oa["stop_id"])
+                        board_epoch = dep_epoch + oa["walk_min"] * 60 + wait_a * 60
+                        rideA, t_at_tr = ride_time(A, i, ia, board_epoch)
+                        wait_b = wait_minutes(B["route_id"], tstop)
+                        t_board2 = t_at_tr + TRANSFER_BUFFER_S + wait_b * 60
+                        rideB, _ = ride_time(B, tb, j, t_board2)
+                        total = (oa["walk_min"] + wait_a + rideA / 60
+                                 + (TRANSFER_BUFFER_S + wait_b * 60) / 60
+                                 + rideB / 60 + db_["walk_min"])
+                        options.append(dict(
+                            _key=(A["route_id"], B["route_id"], tstop),
+                            transfers=1,
+                            total_min=round(total, 1),
+                            walk_o=oa["walk_min"], walk_d=db_["walk_min"],
+                            wait_min=round(wait_a + TRANSFER_BUFFER_S / 60
+                                           + wait_b, 1),
+                            ride_min=round((rideA + rideB) / 60, 1),
+                            route_id=f"{A['route_id']}+{B['route_id']}",
+                            route_name=f"{route_name(A['route_id'])} + "
+                                       f"{route_name(B['route_id'])}",
+                            board=oa["stop_id"], board_name=oa["name"],
+                            alight=db_["stop_id"], alight_name=db_["name"],
+                            transfer_stop=tstop,
+                            transfer_name=stop_pos[tstop][2] if tstop in stop_pos else tstop,
+                            board_at=(dep + dt.timedelta(
+                                minutes=oa["walk_min"] + wait_a)).isoformat(),
+                            arrive=(dep + dt.timedelta(minutes=total)).isoformat(),
+                            legs=[
+                                dict(type="walk", minutes=oa["walk_min"],
+                                     coords=[[o["lat"], o["lng"]],
+                                             [oa["lat"], oa["lng"]]]),
+                                dict(type="bus", minutes=round(rideA / 60, 1),
+                                     route=route_name(A["route_id"]),
+                                     stops=_bus_leg_coords(A, i, ia)),
+                                dict(type="transfer",
+                                     minutes=round(TRANSFER_BUFFER_S / 60
+                                                   + wait_b, 1),
+                                     at=tstop),
+                                dict(type="bus", minutes=round(rideB / 60, 1),
+                                     route=route_name(B["route_id"]),
+                                     stops=_bus_leg_coords(B, tb, j)),
+                                dict(type="walk", minutes=db_["walk_min"],
+                                     coords=[[db_["lat"], db_["lng"]],
+                                             [d["lat"], d["lng"]]]),
+                            ],
+                            eta_p50_min=round(total, 1),
+                            eta_p10_min=round(oa["walk_min"]
+                                              + wait_a + TRANSFER_BUFFER_S / 60 + wait_b
+                                              + (rideA + rideB) * 0.85 / 60, 1),
+                            eta_p90_min=round(oa["walk_min"]
+                                              + wait_a + TRANSFER_BUFFER_S / 60 + wait_b
+                                              + (rideA + rideB) * 1.35 / 60, 1),
+                            usual_p50_min=round(total, 1),
+                            confidence="v0.5-transfers",
+                        ))
     if not options:
-        return dict(options=[], note="no direct route found (transfers arrive in v0.5)")
+        return dict(options=[], note="no route found via max 1 transfer in range")
 
     options.sort(key=lambda x: x["total_min"])
     seen, picked = set(), []

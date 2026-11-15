@@ -66,6 +66,31 @@ def main():
         GROUP BY 1 ORDER BY 1
     """).df()
 
+    # observed headways: median gap between consecutive bus passages at each (route, stop).
+    # The planner uses wait = clamp(headway_p50 / 2, 2, 15) minutes.
+    passages = sorted(CLEAN.glob("passages_*.parquet"))
+    if passages:
+        pfiles = ", ".join(f"'{str(p).replace(chr(92), '/')}'" for p in passages)
+        headway = con.execute(f"""
+            WITH p AS (
+                SELECT route_id, stop_id, tsec
+                FROM read_parquet([{pfiles}])
+                WHERE tsec IS NOT NULL
+            ), s AS (
+                SELECT *, lead(tsec) OVER w AS nxt
+                FROM p WINDOW w AS (PARTITION BY route_id, stop_id ORDER BY tsec)
+            )
+            SELECT route_id, stop_id,
+                   quantile_cont(nxt - tsec, 0.5) AS h50_s,
+                   COUNT(*) AS n
+            FROM s
+            WHERE nxt - tsec BETWEEN 120 AND 3600
+            GROUP BY 1, 2
+        """).df()
+    else:
+        headway = pd.DataFrame()
+    headway.to_parquet(MODEL / "headway.parquet", index=False)
+
     trips = con.execute(f"SELECT COUNT(DISTINCT trip_id) n FROM read_parquet([{files}])").fetchone()[0]
     rows = con.execute(f"SELECT COUNT(*) n FROM read_parquet([{files}])").fetchone()[0]
 
