@@ -60,6 +60,43 @@ def run(sb, cmd, timeout=None, tail=40):
     return out, err, r
 
 
+def day_loop(sb, days, a, t0):
+    for day in days:
+        d0 = time.time()
+        try:
+            run(sb, f"cd /app && timeout 2400 python pipeline/01_extract_day.py "
+                    f"--day {day} || echo 'EXTRACT failed-or-timed-out for {day}'",
+                timeout=2700, tail=4)
+            run(sb, f"cd /app && python pipeline/02_clean_pings.py --day {day}",
+                timeout=3600, tail=6)
+            gtfs = sb.exec(["bash", "-lc", "test -f /app/data/gtfs/stops.txt"]).result()
+            if (gtfs.returncode or 0) == 0:
+                run(sb, f"cd /app && python pipeline/03_project_trips.py --day {day}",
+                    timeout=3600, tail=4)
+            else:
+                print(f"[{ts()}] {day}: no GTFS yet -> skipping stage 03")
+            run(sb, "df -h /app | tail -1; "
+                    "ls -la --block-size=M /app/data/clean/ | tail -7; "
+                    "ls -la --block-size=M /app/data/raw/ 2>/dev/null | tail -3", tail=8)
+            # pull artifacts back (chunked: gateway caps single reads)
+            pull_big(sb, f"/app/data/clean/pings_{day}.parquet",
+                     ROOT / "data/clean" / f"pings_{day}.parquet")
+            try:
+                remote = sb.read_files(
+                    [f"/app/data/clean/traversals_{day}.parquet"]).result()
+            except Exception:
+                remote = {}
+            for path, blob in remote.items():
+                local = ROOT / "data/clean" / path.rsplit("/", 1)[-1]
+                local.write_bytes(blob)
+                print(f"[{ts()}] pulled {path} ({len(blob)/1e6:.1f} MB)")
+            print(f"[{ts()}] ==== day {day} done in "
+                  f"{(time.time()-d0)/60:.1f} min ====")
+        except Exception as ex:
+            print(f"[{ts()}] !! day {day} FAILED: {type(ex).__name__}: {ex} "
+                  f"-> continuing with next day")
+
+
 def pull_big(sb, remote_path, local_path, chunk_mb=16):
     """Pull a large file in chunks (the SDK gateway caps single reads)."""
     run(sb, f"rm -f /tmp/pullchunk_*; split -b {chunk_mb}M '{remote_path}' /tmp/pullchunk_ "
@@ -158,36 +195,8 @@ def main():
                     "ls -la --block-size=M delhi-dtc-bus-gtfs-rt-2026-10.7z",
                 timeout=3600 * 2, tail=4)
 
-        # ---- per-day processing ----
-        for day in days:
-            d0 = time.time()
-            run(sb, f"cd /app && python pipeline/01_extract_day.py --day {day}",
-                timeout=1800, tail=3)
-            run(sb, f"cd /app && python pipeline/02_clean_pings.py --day {day}",
-                timeout=3600, tail=6)
-            gtfs = sb.exec(["bash", "-lc", "test -f /app/data/gtfs/stops.txt"]).result()
-            if (gtfs.returncode or 0) == 0:
-                run(sb, f"cd /app && python pipeline/03_project_trips.py --day {day}",
-                    timeout=3600, tail=4)
-            else:
-                print(f"[{ts()}] {day}: no GTFS yet -> skipping stage 03 (03 needs the "
-                      f"static GTFS from Transport Stack)")
-            run(sb, "pkill -f 'pipeline/0' 2>/dev/null; df -h /app | tail -1; "
-                    "ls -la --block-size=M /app/data/clean/ | tail -6; "
-                    "ls -la --block-size=M /app/data/raw/ 2>/dev/null | tail -3", tail=8)
-            # pull artifacts back (chunked: gateway caps single-file reads)
-            pull_big(sb, f"/app/data/clean/pings_{day}.parquet",
-                     ROOT / "data/clean" / f"pings_{day}.parquet")
-            # traversals (small) if produced
-            try:
-                remote = sb.read_files([f"/app/data/clean/traversals_{day}.parquet"]).result()
-            except Exception:
-                remote = {}
-            for path, blob in remote.items():
-                local = ROOT / "data/clean" / path.rsplit("/", 1)[-1]
-                local.write_bytes(blob)
-                print(f"[{ts()}] pulled {path} ({len(blob)/1e6:.1f} MB)")
-            print(f"[{ts()}] ==== day {day} done in {(time.time()-d0)/60:.1f} min ====")
+        # ---- per-day processing (isolated failures; extraction timeouts) ----
+        day_loop(sb, days, a, t0)
     finally:
         if created:
             print(f"[{ts()}] stopping sandbox ...")
