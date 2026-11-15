@@ -42,10 +42,10 @@ def clean(day: str):
     src = sqlite3.connect(db)
     cur = src.cursor()
     cur.execute("""SELECT vehicle_id,
-                          TRY_CAST(lat AS DOUBLE), TRY_CAST(lng AS DOUBLE),
-                          speed, TRY_CAST(route_id AS BIGINT),
+                          CAST(lat AS DOUBLE), CAST(lng AS DOUBLE),
+                          speed, CAST(route_id AS BIGINT),
                           trip_id,
-                          TRY_CAST("timestamp" AS BIGINT)
+                          CAST("timestamp" AS BIGINT)
                    FROM vehicle_feed""")
     n_in = 0
     INS = "INSERT INTO raw VALUES (?, ?, ?, ?, ?, ?, ?)"

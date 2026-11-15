@@ -53,17 +53,16 @@ _RAD = np.radians
 
 
 def nearest_stops(lat, lng, k=MAX_STOPS_NEAR, radius_km=NEAR_KM):
-    d = (np.sqrt((_RAD((lat - _slat) / 2) ** 2 * 0 +
-                  ((lng - _slng) * 111.320 * np.cos(_RAD(lat))) ** 2 +
-                  ((lat - _slat) * 110.540) ** 2)))
+    d = np.sqrt(((lng - _slng) * 111320.0 * np.cos(_RAD(lat)) / 1000.0) ** 2 +
+                ((lat - _slat) * 110540.0 / 1000.0) ** 2)   # km
     idx = np.argsort(d)[:k]
     out = []
     for i in idx:
-        if d[i] <= radius_km * 1000:
+        if d[i] <= radius_km:
             sid = stops.stop_id.iloc[i]
             out.append(dict(stop_id=sid, name=stops.stop_name.iloc[i],
                             lat=float(_slat[i]), lng=float(_slng[i]),
-                            walk_min=round(d[i] * WALK_ROUTE_FACTOR / (WALK_KMH * 1000 / 60), 1)))
+                            walk_min=round(d[i] * 1000 * WALK_ROUTE_FACTOR / (WALK_KMH * 1000 / 60), 1)))
     return out
 
 
@@ -86,8 +85,8 @@ for p in PAT:
     for a, b in zip(p["stops"][:-1], p["stops"][1:]):
         la, lo, _ = stop_pos[a]
         lb, lo2, _ = stop_pos[b]
-        legs.append(math.hypot((lo2 - lo) * 111.320 * math.cos(_RAD(la)),
-                               (lb - la) * 110.540))
+        legs.append(math.hypot((lo2 - lo) * 111320.0 * math.cos(_RAD(la)),
+                              (lb - la) * 110540.0))
     p["leg_m"] = legs
 
 # ---- model lookups ----
@@ -102,11 +101,11 @@ route_hour = _load("route_hour.parquet")
 route_speed = _load("route_speed.parquet")
 city_hour = _load("city_hour.parquet")
 
-E50 = {(r.route_id, r.from_stop, r.to_stop, r.hour_ist): r.p50_s
+E50 = {(str(r.route_id), str(r.from_stop), str(r.to_stop), int(r.hour_ist)): float(r.p50_s)
        for r in edge_hour.itertuples()} if len(edge_hour) else {}
-RH = {(r.route_id, r.hour_ist): r.speed_kmh
+RH = {(str(r.route_id), int(r.hour_ist)): float(r.speed_kmh)
       for r in route_hour.itertuples()} if len(route_hour) else {}
-RS = {r.route_id: r.speed_kmh for r in route_speed.itertuples()} if len(route_speed) else {}
+RS = {str(r.route_id): float(r.speed_kmh) for r in route_speed.itertuples()} if len(route_speed) else {}
 CH = {int(r.hour_ist): r.speed_kmh for r in city_hour.itertuples()} if len(city_hour) else {}
 CH_DEFAULT = float(np.median(list(CH.values()))) if CH else 15.0
 
@@ -116,7 +115,7 @@ def leg_seconds(route_id, a, b, dist_m, hour):
     if e:
         return float(e)
     sp = RH.get((route_id, hour)) or RS.get(route_id) or CH.get(hour) or CH_DEFAULT
-    return dist_m / 3.6 / max(1.0, sp)
+    return dist_m * 3.6 / max(1.0, sp)   # meters at km/h -> seconds
 
 
 def resolve_place(q: str):
@@ -201,7 +200,7 @@ def journeys(fromq: str = Query(..., alias="from"),
                     ride_f = ride
                     total = oa["walk_min"] * 60 + DEFAULT_WAIT_S + ride_f + db_["walk_min"] * 60
                     options.append(dict(
-                        _key=(pat["route_id"], oa["stop_id"], db_["stop_id"]),
+                        _key=(pat["route_id"], oa["stop_id"]),
                         total_min=round(total / 60, 1),
                         walk_o=oa["walk_min"], walk_d=db_["walk_min"],
                         wait_min=DEFAULT_WAIT_S / 60,

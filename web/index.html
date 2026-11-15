@@ -60,7 +60,7 @@
 </div>
 <script>
 const API = location.protocol.startsWith('http') && location.pathname.startsWith('/web')
-  ? location.origin : 'http://localhost:8000';
+  ? location.origin : 'http://localhost:8010';
 const map = new maplibregl.Map({
   container:'map', style:'https://basemaps.cartocdn.com/gl/dark-matter-gl-style/style.json',
   center:[77.21,28.62], zoom:10.5 });

@@ -62,6 +62,7 @@ def shape_dists(sx, sy):
 
 
 def hhmmss(sec):
+    sec = int(sec)
     h = sec // 3600; m = (sec % 3600) // 60; s = sec % 60
     return f"{h:02d}:{m:02d}:{s:02d}"
 

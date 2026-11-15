@@ -1,0 +1,21 @@
+# CoreWeave Virtual Server definition for Delhi Pulse.
+# Applied via:  kubectl apply -f deployment/server.yaml
+# NOTE: fields are adjusted live against the cluster's CRD once access works
+#       (machineType / os / storageType names get validated from the cluster and
+#        namespace is injected from the kubeconfig context).
+apiVersion: coreweave.com/v1alpha1
+kind: Server
+metadata:
+  name: delhi-pulse
+  # namespace: <from your kubeconfig context - injected at deploy time>
+  labels:
+    coreweave.com/name: delhi-pulse
+spec:
+  region: ORD1                    # adjusted to the region your cluster lives in
+  os: ubuntu2204-docker           # adjusted to an available image from the cluster
+  machineType: cpu-medium-16       # CPU flavor - validated live; NO GPU (waste of credits)
+  rootVolume:
+    size: 200Gi
+    storageType: nvme
+  sshPublicKey: ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIBBpRbFx6A+8ZNS71L0d2NMlOomgIGQYjrATiFMhV+J2 delhi-pulse-vm
+  public: true                     # request a public IP for ssh + API + demo
