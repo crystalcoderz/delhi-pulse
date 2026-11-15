@@ -135,7 +135,7 @@ function render(res){
         <span class="badge">${o.route_name}</span>
         <span class="badge walk">${Math.round(o.wait_min)} min wait</span>
         <span class="badge walk">walk ${Math.round(o.walk_d)}m</span></div>
-      <div class="meta">Board ${o.board_name} → get off ${o.alight_name}<br/>
+      <div class="meta">Board ${o.board_name} → ${o.alight_name}${o.transfers ? ` · change at <b>${o.transfer_name||'transfer'}</b>` : ''}<br/>
       arrive ${new Date(o.arrive).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'})}</div>`;
     c.onclick=()=>{ document.querySelectorAll('.card').forEach(x=>x.classList.remove('sel'));
       c.classList.add('sel'); draw(o); };
@@ -150,6 +150,7 @@ function render(res){
 function draw(o){
   clearRoute();
   o.legs.forEach(l=>{
+    if(l.type==='transfer') return;   // no geometry for transfer waits
     const id = (l.type==='bus'?'bus-':'wk-')+Math.random().toString(36).slice(2);
     const coords = l.type==='bus' ? l.stops : l.coords;
     map.addSource(id, {type:'geojson', data: lineGeo(coords)});
@@ -160,6 +161,12 @@ function draw(o){
     }
     drawnLayers.push(id);
   });
+  if(o.transfer_name){
+    const t = document.createElement('div');
+    t.textContent = 'x';
+    t.style.cssText = 'background:#ffb347;color:#402900;font-weight:700;width:20px;height:20px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:11px;border:2px solid #161927';
+    markers.push(new maplibregl.Marker({element:t}).setLngLat(o.transfer_coord || [77.21,28.62]).addTo(map));
+  }
 }
 function lineGeo(coords){ return {type:'Feature', properties:{}, geometry:
   {type:'LineString', coordinates: coords.map(c=>[c[1],c[0]])}}; }

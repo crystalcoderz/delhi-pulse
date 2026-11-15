@@ -70,19 +70,42 @@ def nearest_stops(lat, lng, k=MAX_STOPS_NEAR, radius_km=NEAR_KM):
 PAT = []       # list of dict(route_id, stops=list[stop_id], leg_m=list)
 STOP_MEMBER = {}  # stop_id -> list[(pat_idx, pos)]
 
+import hashlib
+import pickle
+import time as _time
+
+_stimes_mtime = (GTFS / "stop_times.txt").stat().st_mtime
+_cache_key = hashlib.md5(str(_stimes_mtime).encode()).hexdigest()[:10]
+_cache_path = MODEL / f"patterns_{_cache_key}.pkl"
+
 _g = stimes.sort_values(["trip_id", "stop_sequence"]).groupby("trip_id")
 _seen = {}   # (route_id, stops-tuple) -> pattern index, collapses ~89k trips to distinct patterns
-for tid, g in _g:
-    seq = list(g.stop_id)
-    key = str(trips.set_index("trip_id").route_id.get(tid))
-    pk = (key, tuple(seq))
-    if pk in _seen:
-        continue
-    _seen[pk] = len(PAT)
-    PAT.append(dict(route_id=key, stops=seq, tid=tid))
-for pi, p in enumerate(PAT):
-    for pos, sid in enumerate(p["stops"]):
-        STOP_MEMBER.setdefault(sid, []).append((pi, pos))
+MEMBER_CAP = 80   # max patterns listed per stop (real hub stops serve 100+)
+
+if _cache_path.exists():
+    with open(_cache_path, "rb") as f:
+        PAT, STOP_MEMBER = pickle.load(f)
+else:
+    for tid, g in _g:
+        seq = list(g.stop_id)
+        key = str(trips.set_index("trip_id").route_id.get(tid))
+        pk = (key, tuple(seq))
+        if pk in _seen:
+            continue
+        _seen[pk] = len(PAT)
+        PAT.append(dict(route_id=key, stops=seq, tid=tid))
+    for pi, p in enumerate(PAT):
+        for pos, sid in enumerate(p["stops"]):
+            lst = STOP_MEMBER.setdefault(sid, [])
+            if len(lst) < MEMBER_CAP:
+                lst.append((pi, pos))
+    MODEL.mkdir(parents=True, exist_ok=True)
+    with open(_cache_path, "wb") as f:
+        pickle.dump((PAT, STOP_MEMBER), f, protocol=pickle.HIGHEST_PROTOCOL)
+    # opportunistic cleanup of stale caches
+    for old in MODEL.glob("patterns_*.pkl"):
+        if old != _cache_path:
+            old.unlink()
 for p in PAT:
     legs = []
     for a, b in zip(p["stops"][:-1], p["stops"][1:]):
@@ -210,6 +233,7 @@ def journeys(fromq: str = Query(..., alias="from"),
         return routes_short.get(str(rid), str(rid))
 
     TRANSFER_BUFFER_S = 120.0
+    MAX_OPTIONS = 400        # hard cap: worst-case queries stay sub-second
     options = []
     dep_epoch = dep.timestamp()
 
@@ -221,6 +245,8 @@ def journeys(fromq: str = Query(..., alias="from"),
                 for pj, j in STOP_MEMBER.get(db_["stop_id"], []):
                     if pi != pj or j <= i:
                         continue
+                    if len(options) >= MAX_OPTIONS:
+                        break
                     wait_a = wait_minutes(pat["route_id"], oa["stop_id"])
                     board_epoch = dep_epoch + oa["walk_min"] * 60 + wait_a * 60
                     ride_f, _ = ride_time(pat, i, j, board_epoch)
@@ -273,6 +299,8 @@ def journeys(fromq: str = Query(..., alias="from"),
                         ia = apos.get(tstop)
                         if ia is None or ia <= i or tb >= j:
                             continue
+                        if len(options) >= MAX_OPTIONS:
+                            break
                         wait_a = wait_minutes(A["route_id"], oa["stop_id"])
                         board_epoch = dep_epoch + oa["walk_min"] * 60 + wait_a * 60
                         rideA, t_at_tr = ride_time(A, i, ia, board_epoch)
@@ -297,6 +325,8 @@ def journeys(fromq: str = Query(..., alias="from"),
                             alight=db_["stop_id"], alight_name=db_["name"],
                             transfer_stop=tstop,
                             transfer_name=stop_pos[tstop][2] if tstop in stop_pos else tstop,
+                            transfer_coord=[stop_pos[tstop][1], stop_pos[tstop][0]]
+                                if tstop in stop_pos else None,
                             board_at=(dep + dt.timedelta(
                                 minutes=oa["walk_min"] + wait_a)).isoformat(),
                             arrive=(dep + dt.timedelta(minutes=total)).isoformat(),
