@@ -71,15 +71,18 @@ PAT = []       # list of dict(route_id, stops=list[stop_id], leg_m=list)
 STOP_MEMBER = {}  # stop_id -> list[(pat_idx, pos)]
 
 _g = stimes.sort_values(["trip_id", "stop_sequence"]).groupby("trip_id")
+_seen = {}   # (route_id, stops-tuple) -> pattern index, collapses ~89k trips to distinct patterns
 for tid, g in _g:
     seq = list(g.stop_id)
     key = str(trips.set_index("trip_id").route_id.get(tid))
+    pk = (key, tuple(seq))
+    if pk in _seen:
+        continue
+    _seen[pk] = len(PAT)
     PAT.append(dict(route_id=key, stops=seq, tid=tid))
 for pi, p in enumerate(PAT):
     for pos, sid in enumerate(p["stops"]):
         STOP_MEMBER.setdefault(sid, []).append((pi, pos))
-# dedupe identical sequences per route to shrink the index
-# (cheap approach: keep as-is; v0.5 will collapse duplicates)
 for p in PAT:
     legs = []
     for a, b in zip(p["stops"][:-1], p["stops"][1:]):
