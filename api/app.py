@@ -149,6 +149,23 @@ RH = {(str(r.route_id), int(r.hour_ist)): float(r.speed_kmh)
 RS = {str(r.route_id): float(r.speed_kmh) for r in route_speed.itertuples()} if len(route_speed) else {}
 CH = {int(r.hour_ist): r.speed_kmh for r in city_hour.itertuples()} if len(city_hour) else {}
 CH_DEFAULT = float(np.median(list(CH.values()))) if CH else 15.0
+
+# ---- REAL ping-derived network speeds (pre-GTFS; take precedence) ----
+def _load_real(name):
+    p = MODEL / name
+    return pd.read_parquet(p) if p.exists() else pd.DataFrame()
+
+_rh_real = _load_real("route_hour_real.parquet")
+_rs_real = _load_real("route_speed_real.parquet")
+_ch_real = _load_real("city_hour_real.parquet")
+RHR = {(str(r.route_id), int(r.hour_ist)): float(r.speed_kmh)
+       for r in _rh_real.itertuples()} if len(_rh_real) else {}
+RSR = {str(r.route_id): float(r.speed_kmh)
+       for r in _rs_real.itertuples()} if len(_rs_real) else {}
+CHR = {int(r.hour_ist): float(r.speed_kmh)
+       for r in _ch_real.itertuples()} if len(_ch_real) else {}
+if CHR:
+    CH_DEFAULT = float(np.median(list(CHR.values())))
 WAIT50 = {(str(r.route_id), str(r.stop_id)): float(r.h50_s)
           for r in headway.itertuples()} if len(headway) else {}
 
@@ -175,10 +192,13 @@ def leg_seconds(route_id, a, b, dist_m, hour, day=None, win=None):
     if day is not None:
         drh, dravg = day
         sp = (drh.get((route_id, hour)) or dravg.get(route_id)
+              or RHR.get((route_id, hour)) or RSR.get(route_id)
               or RH.get((route_id, hour)) or RS.get(route_id)
-              or CH.get(hour) or CH_DEFAULT)
+              or CHR.get(hour) or CH.get(hour) or CH_DEFAULT)
         return dist_m * 3.6 / max(1.0, sp)
-    sp = RH.get((route_id, hour)) or RS.get(route_id) or CH.get(hour) or CH_DEFAULT
+    sp = (RHR.get((route_id, hour)) or RSR.get(route_id)
+          or RH.get((route_id, hour)) or RS.get(route_id)
+          or CHR.get(hour) or CH.get(hour) or CH_DEFAULT)
     return dist_m * 3.6 / max(1.0, sp)   # meters at km/h -> seconds
 
 
@@ -524,8 +544,10 @@ def journeys(fromq: str = Query(..., alias="from"),
 
 @app.get("/pulse")
 def pulse():
-    return dict(city_hour={str(k): round(v, 2) for k, v in sorted(CH.items())},
-                note="hour -> observed mean network speed km/h (full overlay in v1)")
+    src = CHR if CHR else CH
+    return dict(city_hour={str(k): round(v, 2) for k, v in sorted(src.items())},
+                source="real-ping-pairs" if CHR else "synthetic",
+                note="hour -> observed mean network speed km/h")
 
 
 # ---------------- Delhi Pulse traffic overlay ----------------
