@@ -8,3 +8,5 @@ model/*.json
 *.log
 .ducktmp/
 .DS_Store
+
+.wrangler/
