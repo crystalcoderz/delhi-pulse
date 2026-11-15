@@ -53,8 +53,13 @@
     <div class="sug" id="fromSug"></div></div>
   <div class="field"><input id="to" placeholder="To — stop name or click the map twice"/>
     <div class="sug" id="toSug"></div></div>
-  <div class="field"><input id="when" type="datetime-local"/></div>
+  <div class="row"><input id="when" type="datetime-local"/></div>
+  <div class="row">
+    <input id="asof" type="date" title="Replay: plan as-if live on this October day"/>
+    <button id="clearAsOf" style="width:84px;margin-top:6px;background:#2a2f4a;color:#8b90a5">live</button>
+  </div>
   <button id="plan">Find journeys</button>
+  <div id="modeChip" class="hint" style="display:none"></div>
   <div id="results"></div>
   <div class="hint">Tip: first map click sets origin, second sets destination.</div>
 </div>
@@ -111,13 +116,32 @@ map.on('click', e=>{
 });
 
 $('plan').onclick = plan;
+$('clearAsOf').onclick = ()=>{ $('asof').value=''; $('modeChip').style.display='none'; plan(); };
 async function plan(){
   const f = picks.from ? (picks.from.stopId ? `stop:${picks.from.stopId}` : `${picks.from.coord[1]},${picks.from.coord[0]}`) : $('from').value;
   const t = picks.to   ? (picks.to.stopId   ? `stop:${picks.to.stopId}`   : `${picks.to.coord[1]},${picks.to.coord[0]}`)   : $('to').value;
   if(!f || !t){ return; }
   const dep = $('when').value ? new Date($('when').value).toISOString() : '';
+  const asof = $('asof').value ? $('asof').value + 'T12:00:00+05:30' : '';
   const r = await fetch(`${API}/journeys?from=${encodeURIComponent(f)}&to=${encodeURIComponent(t)}`
-      + (dep?`&depart=${encodeURIComponent(dep)}`:'')).then(r=>r.json()).catch(e=>({options:[],note:e.message}));
+      + (dep?`&depart=${encodeURIComponent(dep)}`:'')
+      + (asof?`&asOf=${encodeURIComponent(asof)}`:'')).then(r=>r.json()).catch(e=>({options:[],note:e.message}));
+  let usualTop = null;
+  if(asof && r.options && r.options.length){
+    try {
+      const rn = await fetch(`${API}/journeys?from=${encodeURIComponent(f)}&to=${encodeURIComponent(t)}`
+        + (dep?`&depart=${encodeURIComponent(dep)}`:'')).then(x=>x.json());
+      usualTop = rn.options?.[0]?.total_min ?? null;
+    } catch(e){}
+  }
+  window.USUAL_TOP = usualTop;
+  const chip = $('modeChip');
+  if(r.replay_day){
+    chip.style.display='block';
+    chip.innerHTML = 'TIME TRAVEL · replaying <b style="color:var(--acc)">' +
+      r.replay_day.replace(/_/g,'-') + '</b> observed bus speeds' +
+      (usualTop !== null ? '<br/>typical day estimate: ' + Math.round(usualTop) + ' min' : '');
+  } else chip.style.display='none';
   render(r);
 }
 function render(res){
