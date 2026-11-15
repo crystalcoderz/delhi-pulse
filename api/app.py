@@ -171,31 +171,45 @@ _DAY_SPEED_CACHE = {}
 
 
 def _day_speeds(day):
-    """Observed (route,hour)->speed for one day. Lazy dict; empty if absent."""
+    """Observed (route,hour)->speed for one day. Lazy dict; empty if absent.
+    Prefers traversals (stop-visit based); falls back to ping-pair speeds
+    (works for real days with no GTFS yet)."""
     if day not in _DAY_SPEED_CACHE:
         import duckdb
-        path = CLEAN / f"traversals_{day}.parquet"
-        if not path.exists():
-            _DAY_SPEED_CACHE[day] = ({}, {})
-        else:
-            con = duckdb.connect()
-            df = con.execute(f"""
-                SELECT route_id, hour_ist,
-                       SUM(dist_m) / NULLIF(SUM(dur_s), 0) * 3.6 AS sp FROM (
-                    SELECT *, COUNT(*) OVER (PARTITION BY route_id, hour_ist) n
-                    FROM read_parquet('{path.as_posix()}'))
-                GROUP BY 1, 2 HAVING MIN(n) >= 2
-            """).df()
-            df2 = con.execute(f"""
-                SELECT route_id,
-                       SUM(dist_m) / NULLIF(SUM(dur_s), 0) * 3.6 AS sp
-                FROM read_parquet('{path.as_posix()}') GROUP BY 1
-            """).df()
-            con.close()
+        tpath = CLEAN / f"traversals_{day}.parquet"
+        spath = CLEAN / f"speeds_{day}.parquet"
+        apath = CLEAN / f"speedsagg_{day}.parquet"
+        try:
+            if tpath.exists():
+                con = duckdb.connect()
+                df = con.execute(f"""
+                    SELECT route_id, hour_ist,
+                           SUM(dist_m) / NULLIF(SUM(dur_s), 0) * 3.6 AS sp FROM (
+                        SELECT *, COUNT(*) OVER (PARTITION BY route_id, hour_ist) n
+                        FROM read_parquet('{tpath.as_posix()}'))
+                    GROUP BY 1, 2 HAVING MIN(n) >= 2
+                """).df()
+                df2 = con.execute(f"""
+                    SELECT route_id,
+                           SUM(dist_m) / NULLIF(SUM(dur_s), 0) * 3.6 AS sp
+                    FROM read_parquet('{tpath.as_posix()}') GROUP BY 1
+                """).df()
+                con.close()
+            elif spath.exists():
+                df = pd.read_parquet(spath)
+                df = df[df.n >= 4]
+                df2 = pd.read_parquet(apath) if apath.exists() else pd.DataFrame()
+            else:
+                df = pd.DataFrame()
+                df2 = pd.DataFrame()
             _DAY_SPEED_CACHE[day] = (
-                {(str(r.route_id), int(r.hour_ist)): float(r.sp) for r in df.itertuples()},
-                {str(r.route_id): float(r.sp) for r in df2.itertuples()},
+                {(str(r.route_id), int(r.hour_ist)): float(r.sp)
+                 for r in df.itertuples()},
+                {str(r.route_id): float(r.sp)
+                 for r in df2.itertuples()} if len(df2) else {},
             )
+        except Exception:
+            _DAY_SPEED_CACHE[day] = ({}, {})
     return _DAY_SPEED_CACHE[day]
 
 
@@ -484,8 +498,11 @@ def geo(hour: int = 9, day: str | None = None):
 
 @app.get("/days")
 def days():
-    return {"days": sorted(p.stem.replace("traversals_", "")
-                           for p in CLEAN.glob("traversals_*.parquet"))}
+    t = {p.stem.replace("traversals_", "")
+         for p in CLEAN.glob("traversals_*.parquet")}
+    s = {p.stem.replace("speeds_", "")
+         for p in CLEAN.glob("speeds_*.parquet")}
+    return {"days": sorted(t | s)}
 
 
 if (ROOT / "web").exists():
