@@ -448,6 +448,7 @@ def journeys(fromq: str = Query(..., alias="from"),
                         board_at=(dep + dt.timedelta(
                             minutes=oa["walk_min"] + wait_a)).isoformat(),
                         arrive=(dep + dt.timedelta(minutes=total)).isoformat(),
+                        _geo=("direct", pat, i, j, oa, db_),
                         legs=[
                             dict(type="walk", minutes=oa["walk_min"],
                                  coords=[[o["lat"], o["lng"]],
@@ -492,10 +493,47 @@ def journeys(fromq: str = Query(..., alias="from"),
                 continue
             seen.add(op["_key"])
             op.pop("_key")
+            geo = op.pop("_geo", None)
+            if geo:
+                u = _usual_at_quiet_hour(geo)
+                op["usual_p50_min"] = u["total_min"]
+                op["usual_hour_ist"] = u["hour"]
+                op["rush_effect_min"] = round(
+                    op["total_min"] - u["total_min"], 1)
+                op["usual_wait_min"] = u["wait_min"]
             picked.append(op)
             if len(picked) == 3:
                 break
         return dict(options=picked, replay_day=strday, replay_mode=replay_mode)
+
+    def _usual_at_quiet_hour(geo):
+        """Same journey, evaluated across commuter-quiet hours; the
+        'usual' answer is the best of them (typically the least traffic)."""
+        best = None
+        for hour in (6, 7, 13, 14, 15, 16, 22, 23):
+            quiet_ts = dep.replace(hour=hour, minute=30, second=0).timestamp()
+            if geo[0] == "direct":
+                _, pat, i, j, oa, db_ = geo
+                wait_q = wait_minutes(pat["route_id"], oa["stop_id"], hour=hour)
+                board_q = quiet_ts + oa["walk_min"] * 60 + wait_q * 60
+                ride_q, _, _, _ = ride_time(pat, i, j, board_q)
+                total = (oa["walk_min"] + wait_q + ride_q / 60 + db_["walk_min"])
+                wait_sum = wait_q
+            else:
+                _, A, i, ia, B, tb, j, oa, db_, tstop, wmin = geo
+                wait_a = wait_minutes(A["route_id"], oa["stop_id"], hour=hour)
+                board_q = quiet_ts + oa["walk_min"] * 60 + wait_a * 60
+                rideA, t_tr, _, _ = ride_time(A, i, ia, board_q)
+                wait_b = wait_minutes(B["route_id"], tstop, hour=hour)
+                xfer_s = TRANSFER_BUFFER_S + wmin * 60 + wait_b * 60
+                rideB, _, _, _ = ride_time(B, tb, j, t_tr + xfer_s)
+                total = (oa["walk_min"] + wait_a + rideA / 60 + xfer_s / 60
+                         + rideB / 60 + db_["walk_min"])
+                wait_sum = wait_a + wait_b
+            if best is None or total < best["total"]:
+                best = dict(total=total, hour=hour, wait_sum=wait_sum)
+        return dict(total_min=round(best["total"], 1), hour=best["hour"],
+                    wait_min=round(best["wait_sum"], 1))
 
     def _emit_transfer(A, B, i, ia, tb, j, oa, tstop, wmin, db_, via=None):
         if len(options) >= MAX_OPTIONS:
@@ -531,6 +569,7 @@ def journeys(fromq: str = Query(..., alias="from"),
             board_at=(dep + dt.timedelta(
                 minutes=oa["walk_min"] + wait_a)).isoformat(),
             arrive=(dep + dt.timedelta(minutes=total)).isoformat(),
+            _geo=("xfer", A, i, ia, B, tb, j, oa, db_, tstop, wmin),
             legs=[
                 dict(type="walk", minutes=oa["walk_min"],
                      coords=[[o["lat"], o["lng"]], [oa["lat"], oa["lng"]]]),

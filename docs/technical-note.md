@@ -80,13 +80,27 @@ Hierarchy with graceful fallback (never a blank):
 - v0/v1 model: DuckDB `quantile_cont` per edge x hour (>=3 samples);
   route/city aggregates are distance-weighted harmonic-style
   (sum(dist)/sum(dur)).
-- Waiting time: observed median headway per (route, stop) from passage
-  events, halved and clamped to [2, 15] min; flat 5 min fallback.
+- Ping-pair speeds (pre-GTFS layer, real data now): pairs with dt<=120 s,
+  15 m < d, and 3 < implied speed < 90 km/h — the floor removes depot/creep
+  contamination (it pushed per-route averages down by km/h; discovered
+  comparing route-hour cells to route-level aggregates).
+- **Waiting time** comes from *observed service frequencies* extracted from
+  the feed's own trip labels (`route_HH_MM`): distinct labels per
+  (route, scheduled-departure hour), averaged across days, -> headway =
+  3600/n -> wait = headway/2 clamped to [0.75, 15] min
+  (34,448 route-hour frequency cells over the processed days). This model
+  works entirely without static GTFS.
 - **Dwell is included** in traversal samples (passage-to-passage spans stops),
   and separately observable from stop-linger pings; the brief's "decide
   whether to treat it separately" is answered both ways deliberately:
   end-to-end ETAs include it (that is what riders experience), the model
   decomposition allows reporting it.
+- "Usual at a quieter hour" (brief 2.2): each journey option is re-planned
+  across commuter-quiet hours (6,7,13-16,22,23) with those hours' own
+  headways; the API returns `usual_p50_min`, `usual_hour_ist` and
+  `rush_effect_min`. With the ping-pair layer, hour contrasts are muted
+  (documented finding: pair speeds miss dwell compounding); the stop-passage
+  quantile model restores the fuller effect post-GTFS.
 
 ## 6. Ping-pair speeds without GTFS (stage 4f)
 
@@ -121,6 +135,13 @@ re-planned and scored against what actually happened.
 - Edge-replay harness exists (`validation/holdout.py`, reservoir sampling +
   `--test-days` for temporal hold-out): MAE / bias / %-within-5-10-min,
   saved to `model/holdout_report.json`.
+- Journey-replay harness exists (`validation/holdout_journeys.py`): real
+  observed traversals replayed through the planner, ride-time vs actual,
+  plus coverage (did the planner even find it).
+- **Measured (real data, leave-one-day-out** `validation/hold_pings.py`,
+  178,686 route x hour cells across 7 October days the model never saw):
+  route x hour model MAE **2.1 km/h** vs a naive city-hour baseline
+  3.13 km/h — a **33% lift**; 92.3% of cells within 5 km/h, 99% within 10.
 - Full temporal protocol (train Oct 1-24, test Oct 25-31) executes as soon
   as stop-level traversals exist for real days (static GTFS dependency).
 - Google Distance Matrix comparison table + 40 canonical OD pairs: to be
