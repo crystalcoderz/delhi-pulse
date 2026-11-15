@@ -1,0 +1,88 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>Delhi Pulse — city traffic from buses</title>
+<script src="/web/vendor/maplibre-gl.js"></script>
+<link href="/web/vendor/maplibre-gl.css" rel="stylesheet"/>
+<style>
+  :root { --bg:#10121b; --acc:#3ddc97; --dim:#8b90a5; }
+  * { box-sizing:border-box; margin:0; }
+  body { background:var(--bg); font-family:'Segoe UI',system-ui,sans-serif; overflow:hidden; }
+  #map { position:absolute; inset:0; }
+  .hud { position:absolute; z-index:2; left:16px; top:16px; right:16px; pointer-events:none;
+         display:flex; flex-direction:column; gap:10px; align-items:flex-start; }
+  .card { background:rgba(16,18,27,.82); backdrop-filter:blur(10px); border:1px solid #262a3d;
+          border-radius:16px; padding:14px 18px; pointer-events:auto;
+          box-shadow:0 8px 32px rgba(0,0,0,.5); }
+  .brand { font-size:12px; letter-spacing:.28em; color:var(--acc); font-weight:700; }
+  h1 { color:#fff; font-size:22px; margin:4px 0 2px; }
+  .sub { color:var(--dim); font-size:12px; }
+  .timecard { display:flex; gap:12px; align-items:center; padding:10px 18px; }
+  .hh { font-size:26px; font-weight:800; color:#fff; min-width:64px; }
+  input[type=range] { width:min(46vw,300px); accent-color:var(--acc); }
+  select { background:#0d0f18; color:#e8eaf2; border:1px solid #262a3d; border-radius:8px;
+           padding:6px 10px; font-size:13px; }
+  .legend { display:flex; gap:8px; align-items:center; font-size:11px; color:var(--dim); }
+  .bar { width:120px; height:8px; border-radius:4px;
+         background:linear-gradient(90deg,#f06e28,#3cd2a0); }
+  .planner { position:absolute; z-index:2; right:16px; top:16px; }
+  .planner a { color:#fff; text-decoration:none; background:var(--acc); color:#06281a;
+               font-weight:700; font-size:13px; padding:10px 16px; border-radius:10px; }
+</style>
+</head>
+<body>
+<div id="map"></div>
+<div class="hud">
+  <div class="card">
+    <div class="brand">DELHI PULSE</div>
+    <h1>7,000 buses. One living map.</h1>
+    <div class="sub">Route colors = observed bus speeds. Drag the hour — watch the city breathe.</div>
+  </div>
+  <div class="card timecard">
+    <div class="hh" id="hh">09:00</div>
+    <input id="hour" type="range" min="5" max="22" value="9"/>
+    <select id="day"><option value="">typical day</option></select>
+    <div class="legend"><span>slow</span><div class="bar"></div><span>fast</span></div>
+  </div>
+</div>
+<div class="planner"><a href="/web/">Plan a journey →</a></div>
+<script>
+const API = location.origin;
+const map = new maplibregl.Map({
+  container:'map', style:'https://basemaps.cartocdn.com/gl/dark-matter-gl-style/style.json',
+  center:[77.21,28.62], zoom:10 });
+window.map = map;
+let layerId_ = null, srcId_ = null;
+
+async function refresh(){
+  const hour = document.getElementById('hour').value;
+  const day  = document.getElementById('day').value || '';
+  document.getElementById('hh').textContent = String(hour).padStart(2,'0') + ':00';
+  const fc = await fetch(`${API}/geo?hour=${hour}${day?`&day=${day}`:''}`)
+    .then(r=>r.json()).catch(()=>null);
+  if(!fc) return;
+  if(layerId_){ map.removeLayer(layerId_); map.removeSource(srcId_); }
+  srcId_ = 'pulse-src-' + Math.random().toString(36).slice(2);
+  layerId_ = 'pulse-lyr-' + Math.random().toString(36).slice(2);
+  map.addSource(srcId_, {type:'geojson', data:fc});
+  map.addLayer({id:layerId_, type:'line', source:srcId_,
+    layout:{'line-cap':'round','line-join':'round'},
+    paint:{'line-color':['get','color'],
+           'line-width':['interpolate',['linear'],['zoom'], 10, 2.6, 13, 7],
+           'line-blur':1, 'line-opacity':0.9}});
+}
+
+(async ()=>{
+  const days = await fetch(`${API}/days`).then(r=>r.json()).catch(()=>({days:[]}));
+  const sel = document.getElementById('day');
+  (days.days||[]).forEach(d=>{ const o=document.createElement('option'); o.value=d;
+    o.textContent = 'replay '+d.replace(/_/g,'-'); sel.appendChild(o); });
+})();
+document.getElementById('hour').addEventListener('input', ()=>refresh());
+document.getElementById('day').addEventListener('change', ()=>refresh());
+map.on('load', refresh);
+</script>
+</body>
+</html>

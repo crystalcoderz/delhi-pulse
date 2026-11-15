@@ -426,5 +426,54 @@ def pulse():
                 note="hour -> observed mean network speed km/h (full overlay in v1)")
 
 
+# ---------------- Delhi Pulse traffic overlay ----------------
+_SHAPES = {}
+_shp = pd.read_csv(GTFS / "shapes.txt")
+for sid, g in _shp.groupby("shape_id", sort=False):
+    g = g.sort_values("shape_pt_sequence")
+    _SHAPES[str(sid)] = list(zip(g.shape_pt_lat.astype(float),
+                                  g.shape_pt_lon.astype(float)))
+_ROUTE_SHAPES = {}
+for r in trips.itertuples():
+    _ROUTE_SHAPES.setdefault(str(r.route_id), str(r.shape_id))
+
+
+def _ramp(kmh, vmax=36.0):
+    """Speed -> color: slow amber/red, fast teal (cividis-like, dark bg)."""
+    t = max(0.0, min(1.0, kmh / vmax))
+    # slow: (240,110,40) fast: (60,210,160)
+    r = int(240 + (60 - 240) * t)
+    g = int(110 + (210 - 110) * t)
+    b = int(40 + (160 - 40) * t)
+    return f"#{r:02x}{g:02x}{b:02x}"
+
+
+@app.get("/geo")
+def geo(hour: int = 9, day: str | None = None):
+    drh, dravg = _day_speeds(day) if day else ({}, {})
+    feats = []
+    for rid, sid in _ROUTE_SHAPES.items():
+        if sid not in _SHAPES:
+            continue
+        sp = (drh.get((rid, hour)) or dravg.get(rid)
+              or RH.get((rid, hour)) or RS.get(rid) or CH.get(hour) or CH_DEFAULT)
+        feats.append({
+            "type": "Feature",
+            "properties": {"route": rid, "name": routes_short.get(rid, rid),
+                           "speed_kmh": round(float(sp), 1),
+                           "color": _ramp(float(sp))},
+            "geometry": {"type": "LineString",
+                         "coordinates": [[lng, lat] for lat, lng in _SHAPES[sid]]},
+        })
+    return {"type": "FeatureCollection", "features": feats,
+            "hour": hour, "day": day}
+
+
+@app.get("/days")
+def days():
+    return {"days": sorted(p.stem.replace("traversals_", "")
+                           for p in CLEAN.glob("traversals_*.parquet"))}
+
+
 if (ROOT / "web").exists():
     app.mount("/web", StaticFiles(directory=str(WEB), html=True), name="web")

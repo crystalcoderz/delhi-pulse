@@ -179,7 +179,10 @@ def main():
             pull_big(sb, f"/app/data/clean/pings_{day}.parquet",
                      ROOT / "data/clean" / f"pings_{day}.parquet")
             # traversals (small) if produced
-            remote = sb.read_files([f"/app/data/clean/traversals_{day}.parquet"]).result()
+            try:
+                remote = sb.read_files([f"/app/data/clean/traversals_{day}.parquet"]).result()
+            except Exception:
+                remote = {}
             for path, blob in remote.items():
                 local = ROOT / "data/clean" / path.rsplit("/", 1)[-1]
                 local.write_bytes(blob)
