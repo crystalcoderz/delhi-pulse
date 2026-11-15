@@ -17,6 +17,7 @@ from common import ensure_dirs, CLEAN, IST_OFFSET_S
 
 MAX_PAIR_KMH = 90.0   # implied speeds above this are GPS noise
 MIN_PAIR_M = 15.0     # very short pairs are jitter
+MIN_PAIR_KMH = 3.0     # sub-walking-pace pairs are depot creep, not traffic
 
 
 def main(day: str):
@@ -53,11 +54,12 @@ def main(day: str):
                COUNT(*) AS n
         FROM pairs
         WHERE dist_m > {MIN_PAIR_M}
-          AND dist_m / dt_s * 3.6 <= {MAX_PAIR_KMH}
+          AND dist_m / dt_s * 3.6 BETWEEN {MIN_PAIR_KMH} AND {MAX_PAIR_KMH}
         GROUP BY 1, 2
     """).df()
 
     # trip-weighted route aggregate (for coarse replay fallback)
+    # depot creep filtered the same way as cells
     df2 = con.execute(f"""
         WITH seq AS (
             SELECT route_id, lat, lng, ts_utc,
@@ -67,13 +69,20 @@ def main(day: str):
             FROM read_parquet('{src.as_posix()}')
             WHERE route_id IS NOT NULL
             WINDOW w AS (PARTITION BY trip_id, vehicle_id ORDER BY ts_utc)
+        ), p AS (
+            SELECT route_id,
+                   sqrt(power((nlng-lng)*111320.0*cos(radians((nlat+lat)/2.0)),2)
+                        + power((nlat-lat)*110540.0,2)) AS d,
+                   nts - ts_utc AS dt
+            FROM seq WHERE nts > ts_utc AND nts - ts_utc <= 120
+        ), kept AS (
+            SELECT * FROM p
+            WHERE d > {MIN_PAIR_M} AND d / dt * 3.6 BETWEEN {MIN_PAIR_KMH} AND {MAX_PAIR_KMH}
         )
         SELECT route_id,
-               SUM(sqrt( power((nlng-lng)*111320.0*cos(radians((nlat+lat)/2.0)),2)
-                        + power((nlat-lat)*110540.0,2) )) AS dist_sum_m,
-               SUM(nts - ts_utc) AS dt_sum_s
-        FROM seq
-        WHERE nts > ts_utc AND nts - ts_utc <= 120
+               SUM(d) AS dist_sum_m,
+               SUM(dt) AS dt_sum_s
+        FROM kept
         GROUP BY 1
     """).df()
     con.close()

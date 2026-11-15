@@ -171,18 +171,26 @@ WAIT50 = {(str(r.route_id), str(r.stop_id)): float(r.h50_s)
           for r in headway.itertuples()} if len(headway) else {}
 WAIT50H = {(str(r.route_id), str(r.stop_id), int(getattr(r, "h_ist", 0))): float(r.h50_s)
            for r in headway_hour.itertuples()} if len(headway_hour) else {}
+_wait_real_df = _load_real("wait_headway_real.parquet")
+WAITR = {(str(r.route_id), int(r.hour_ist)): float(r.headway_s)
+         for r in _wait_real_df.itertuples()} if len(_wait_real_df) else {}
 
 
 def wait_minutes(route_id, stop_id, hour=None):
-    """Expected wait from observed headways (p50/2), clamped 2..15 min.
-    Prefers the hour-specific headway, falls back to the pooled one."""
+    """Expected wait, clamped [0.75, 15] min.
+    Precedence: real service headways (trip labels) -> synth stop headways
+    (pooled, hour-aware) -> flat default."""
+    route_id, stop_id = str(route_id), str(stop_id)
     if hour is not None:
-        h = WAIT50H.get((str(route_id), str(stop_id), int(hour) % 24))
+        h = WAITR.get((route_id, int(hour) % 24))
         if h:
-            return min(15.0, max(2.0, h / 120.0))
-    h = WAIT50.get((str(route_id), str(stop_id)))
+            return min(15.0, max(0.75, h / 120.0))
+        h = WAIT50H.get((route_id, stop_id, int(hour) % 24))
+        if h:
+            return min(15.0, max(0.75, h / 120.0))
+    h = WAIT50.get((route_id, stop_id))
     if h:
-        return min(15.0, max(2.0, h / 120.0))
+        return min(15.0, max(0.75, h / 120.0))
     return DEFAULT_WAIT_S / 60.0
 
 
