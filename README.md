@@ -1,10 +1,12 @@
 # Delhi Pulse
 ### Real-time bus traffic model and journey planner — Transport Stack Hackathon 2026, Problem 1
 
+**Live:** [City Pulse at the edge](https://delhi-pulse.prayaas.workers.dev/) (real October DTC speeds on Cloudflare's network, APAC) · full planner runs locally (see Quickstart).
+
 Buses-as-probes traffic model for Delhi: one month of DTC bus GPS becomes
 time-dependent travel times, served through a Google Maps-style journey
 planner API with transfers, headway-based waits, quantile ETA bands,
-and day/window time-travel replay.
+day/window time-travel replay, and a live GTFS-RT blend layer.
 
 ## Quickstart (synthetic dress rehearsal, no downloads)
 

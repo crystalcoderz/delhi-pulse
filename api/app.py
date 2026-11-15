@@ -52,9 +52,12 @@ if _rt_url:
 
 # ---------------------------------------------------------------- static GTFS
 stops = pd.read_csv(GTFS / "stops.txt")
-routes = pd.read_csv(GTFS / "routes.txt").set_index("route_id")
-trips = pd.read_csv(GTFS / "trips.txt")
-stimes = pd.read_csv(GTFS / "stop_times.txt")
+stops["stop_id"] = stops["stop_id"].astype(str)          # canonical string ids
+routes = pd.read_csv(GTFS / "routes.txt")
+routes["route_id"] = routes["route_id"].astype(str)
+routes = routes.set_index("route_id")
+trips = pd.read_csv(GTFS / "trips.txt", dtype=str)
+stimes = None   # loaded lazily only when the pattern cache is cold
 
 stop_pos = {r.stop_id: (r.stop_lat, r.stop_lon, r.stop_name)
             for r in stops.itertuples()}
@@ -92,7 +95,6 @@ _stimes_mtime = (GTFS / "stop_times.txt").stat().st_mtime
 _cache_key = hashlib.md5(str(_stimes_mtime).encode()).hexdigest()[:10]
 _cache_path = MODEL / f"patterns_{_cache_key}.pkl"
 
-_g = stimes.sort_values(["trip_id", "stop_sequence"]).groupby("trip_id")
 _seen = {}   # (route_id, stops-tuple) -> pattern index, collapses ~89k trips to distinct patterns
 MEMBER_CAP = 80   # max patterns listed per stop (real hub stops serve 100+)
 
@@ -100,6 +102,8 @@ if _cache_path.exists():
     with open(_cache_path, "rb") as f:
         PAT, STOP_MEMBER = pickle.load(f)
 else:
+    stimes = pd.read_csv(GTFS / "stop_times.txt", dtype=str)  # cold boot only
+    _g = stimes.sort_values(["trip_id", "stop_sequence"]).groupby("trip_id")
     for tid, g in _g:
         seq = list(g.stop_id)
         key = str(trips.set_index("trip_id").route_id.get(tid))
@@ -671,22 +675,31 @@ def _ramp(kmh, vmax=36.0):
 
 
 @app.get("/geo")
-def geo(hour: int = 9, day: str | None = None):
+def geo(hour: int = 9, day: str | None = None, limit: int = 800,
+        stride: int = 3):
     drh, dravg = _day_speeds(day) if day else ({}, {})
     feats = []
-    for rid, sid in _ROUTE_SHAPES.items():
-        if sid not in _SHAPES:
+    # order routes by ping-pair coverage so the visible set is the busiest
+    ranked = sorted(_ROUTE_SHAPES.keys(),
+                    key=lambda r: -RHR.get((r, hour), RSR.get(r, 0) or 0))
+    for rid in ranked[:max(10, min(limit, 2500))]:
+        sid = _ROUTE_SHAPES[rid]
+        pts = _SHAPES.get(sid)
+        if not pts:
             continue
         sp = (drh.get((rid, hour)) or dravg.get(rid)
               or RH.get((rid, hour)) or RS.get(rid) or CH.get(hour) or CH_DEFAULT)
-        feats.append({
-            "type": "Feature",
-            "properties": {"route": rid, "name": routes_short.get(rid, rid),
-                           "speed_kmh": round(float(sp), 1),
-                           "color": _ramp(float(sp))},
-            "geometry": {"type": "LineString",
-                         "coordinates": [[lng, lat] for lat, lng in _SHAPES[sid]]},
-        })
+        coords = [[round(lng, 5), round(lat, 5)]
+                  for lat, lng in pts[::max(1, stride)]]
+        if len(coords) >= 2:
+            feats.append({
+                "type": "Feature",
+                "properties": {"route": rid,
+                               "name": routes_short.get(rid, rid),
+                               "speed_kmh": round(float(sp), 1),
+                               "color": _ramp(float(sp))},
+                "geometry": {"type": "LineString", "coordinates": coords},
+            })
     return {"type": "FeatureCollection", "features": feats,
             "hour": hour, "day": day}
 

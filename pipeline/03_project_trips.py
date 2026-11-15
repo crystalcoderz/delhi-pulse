@@ -1,22 +1,23 @@
 """
 Stage 3: project clean pings onto GTFS shapes -> stop passages -> edge traversals.
 
-Two modes (auto-detected):
-  trips  mode: GPS trip_id joins static GTFS trips.txt  (synthetic fixture, or
-              Transport Stack feed where ids align)
-  routes mode: trip_id is a runtime label like "1795_19_31"; key on route_id
-               instead, try each of the route's shapes (both directions),
-               keep the best-fitting one (min mean ping distance), and split
-               trajectories on >10-minute ping gaps.
+Modes (auto-detected):
+  trips   — GPS trip_id joins static GTFS (synthetic fixture / aligned feeds)
+  routes  — trip_id is a runtime label ("1795_19_31"); key on route_id, try the
+            route's shapes (both directions), keep the best fit; segment
+            trajectories at ping gaps >10 min.
+
+Parallel: --workers N (default: cpu count//2). Workers load the GTFS once
+each; the parent streams (trip, vehicle) trajectories in batches.
 
 Outputs per day:
   data/clean/passages_YYYY_MM_DD.parquet
   data/clean/traversals_YYYY_MM_DD.parquet
-Usage:
-  python pipeline/03_project_trips.py --day 2026_10_15 [--mode auto|trips|routes]
 """
 import argparse
 import math
+import multiprocessing as mp
+import os
 from pathlib import Path
 
 import duckdb
@@ -29,7 +30,8 @@ from common import (ensure_dirs, CLEAN, GTFS,
 
 C_LAT, C_LNG = 28.62, 77.21
 K_LAT, K_LNG = 110540.0, 111320.0 * math.cos(math.radians(C_LAT))
-SEGMENT_GAP_S = 600.0     # >10 min between pings = new run segment
+SEGMENT_GAP_S = 600.0
+BATCH_TRAJECTORIES = 200
 
 
 class ShapeCache:
@@ -74,72 +76,6 @@ def project_to_polyline(px, py, x, y, cum, chunk=256):
         d_out[i:i + chunk] = np.sqrt(d2[r, j])
         s_out[i:i + chunk] = cum[j] + t[r, j] * np.sqrt(seg_len2[j])
     return s_out, d_out
-
-
-def iter_trips(parquet_paths):
-    con = duckdb.connect()
-    con.execute("SET memory_limit='4GB'")
-    files = ", ".join(f"'{str(p).replace(chr(92), '/')}'" for p in parquet_paths)
-    q = f"""
-        SELECT trip_id, vehicle_id, route_id, lat, lng, ts_utc
-        FROM read_parquet([{files}]) ORDER BY trip_id, vehicle_id, ts_utc
-    """
-    cur = con.execute(q)
-
-    def consume(rows, upto):
-        if upto == 0:
-            return
-        head = rows[0]
-        sel = rows[:upto]
-        arr = np.array([(r[3], r[4], r[5], r[2]) for r in sel], dtype=float)
-        yield ((head[0], head[1]), arr[:, 0], arr[:, 1], arr[:, 2], arr[:, 3])
-
-    def split_point(rows):
-        lo, hi = 0, len(rows)
-        key = (rows[0][0], rows[0][1])
-        while lo < hi:
-            mid = (lo + hi) // 2
-            if (rows[mid][0], rows[mid][1]) <= key:
-                lo = mid + 1
-            else:
-                hi = mid
-        return lo
-
-    batch = []
-    while True:
-        rows = cur.fetchmany(100_000)
-        if not rows:
-            break
-        batch.extend(rows)
-        while len(batch) and (batch[0][0], batch[0][1]) != (batch[-1][0], batch[-1][1]):
-            cut = split_point(batch)
-            yield from consume(batch, cut)
-            batch = batch[cut:]
-    if batch:
-        yield from consume(batch, len(batch))
-    cur.close()
-    con.close()
-
-
-def load_gtfs():
-    shapes = ShapeCache().load()
-    trips_df = pd.read_csv(GTFS / "trips.txt", dtype=str)
-    times = pd.read_csv(GTFS / "stop_times.txt", dtype=str)
-    stops = pd.read_csv(GTFS / "stops.txt").set_index("stop_id")
-    stimes = times.copy()
-    stimes["stop_sequence"] = stimes.stop_sequence.astype(int)
-    stops_by_trip = {t: g.sort_values("stop_sequence")
-                     for t, g in stimes.groupby("trip_id")}
-    # route -> [shape_ids]; shape_id -> canonical ordered stop list
-    route_shapes = {}
-    shape_ref = {}
-    for r in trips_df.itertuples():
-        route_shapes.setdefault(str(r.route_id), set()).add(str(r.shape_id))
-        if str(r.shape_id) not in shape_ref:
-            g = stops_by_trip.get(str(r.trip_id))
-            if g is not None and len(g):
-                shape_ref[str(r.shape_id)] = g
-    return shapes, route_shapes, shape_ref, stops, trips_df
 
 
 def passages_for_segment(s, d, t_, seg_mask, shape, ref_stops, stops_xy,
@@ -191,6 +127,155 @@ def passages_for_segment(s, d, t_, seg_mask, shape, ref_stops, stops_xy,
     return n
 
 
+def load_gtfs():
+    shapes = ShapeCache().load()
+    trips_df = pd.read_csv(GTFS / "trips.txt", dtype=str)
+    times = pd.read_csv(GTFS / "stop_times.txt", dtype=str)
+    stops = pd.read_csv(GTFS / "stops.txt")
+    stops["stop_id"] = stops["stop_id"].astype(str)      # canonical string ids
+    stops = stops.set_index("stop_id")
+    stimes = times.copy()
+    stimes["stop_sequence"] = stimes.stop_sequence.astype(int)
+    stops_by_trip = {t: g.sort_values("stop_sequence")
+                     for t, g in stimes.groupby("trip_id")}
+    route_shapes = {}
+    shape_ref = {}
+    for r in trips_df.itertuples():
+        route_shapes.setdefault(str(r.route_id), set()).add(str(r.shape_id))
+        if str(r.shape_id) not in shape_ref:
+            g = stops_by_trip.get(str(r.trip_id))
+            if g is not None and len(g):
+                shape_ref[str(r.shape_id)] = g
+    return shapes, route_shapes, shape_ref, stops, trips_df
+
+
+# ------------------------- worker process globals --------------------------
+_W = {}
+
+
+def _worker_init(mode):
+    shapes, route_shapes, shape_ref, stops, trips_df = load_gtfs()
+    trips_set = set(trips_df.trip_id.astype(str))
+    trips_meta = trips_df.set_index("trip_id")
+    _W.update(shapes=shapes, route_shapes=route_shapes, shape_ref=shape_ref,
+              stops=stops, trips_set=trips_set, trips_meta=trips_meta, mode=mode)
+
+
+def _trajectory(group):
+    """Core per-trajectory processing. group = (trip_id, vehicle_id, proute,
+    lat, lng, ts). Returns (passages, traversals, n_segments, matched)."""
+    trip_id, vehicle_id, proute, plat, plng, pts = group
+    passages, traversals = [], []
+    if len(pts) == 0 or not np.isfinite(proute[0]):
+        return passages, traversals, 0, 0
+    rv = float(proute[0])
+    route_id = str(int(rv)) if rv.is_integer() else str(rv)
+    px = (plng - C_LNG) * K_LNG
+    py = (plat - C_LAT) * K_LAT
+    gaps = np.diff(pts)
+    seg_starts = np.concatenate([[0], np.where(gaps > SEGMENT_GAP_S)[0] + 1])
+
+    if _W["mode"] == "trips":
+        cand_shapes = []
+        meta = _W["trips_meta"].loc[trip_id] if trip_id in _W["trips_set"] else None
+        if meta is not None:
+            cand_shapes.append((route_id, str(meta.shape_id)))
+    else:
+        cand_shapes = [(route_id, sh)
+                       for sh in sorted(_W["route_shapes"].get(route_id, []))]
+    if not cand_shapes:
+        return passages, traversals, 0, 0
+
+    n_segs = matched = 0
+    for si, start in enumerate(seg_starts):
+        end = seg_starts[si + 1] if si + 1 < len(seg_starts) else len(pts)
+        if end - start < MIN_TRIP_PINGS:
+            continue
+        n_segs += 1
+        seg_px, seg_py, seg_t = px[start:end], py[start:end], pts[start:end]
+        best = None
+        for _, shape_id in cand_shapes:
+            shape = _W["shapes"].get(shape_id)
+            if shape is None:
+                continue
+            s, d = project_to_polyline(seg_px, seg_py, *shape)
+            ok = d <= 2 * NEAR_SHAPE_M
+            if ok.sum() < MIN_TRIP_PINGS:
+                continue
+            score = float(np.mean(np.sort(d)[:max(20, ok.sum() // 2)]))
+            if best is None or score < best[0]:
+                best = (score, shape_id, s, d)
+        if best is None:
+            continue
+        matched += 1
+        _, shape_id, s_all, d_all = best
+        seg_mask = d_all <= NEAR_SHAPE_M
+        ref = _W["shape_ref"].get(shape_id)
+        passages_for_segment(s_all, d_all, seg_t, seg_mask,
+                             _W["shapes"].get(shape_id), ref, _W["stops"],
+                             trip_id, vehicle_id, route_id,
+                             passages, traversals)
+    return passages, traversals, n_segs, matched
+
+
+def _worker_batch(batch):
+    P, T, S, M = [], [], 0, 0
+    for g in batch:
+        p, t, s, m = _trajectory(g)
+        P.extend(p); T.extend(t); S += s; M += m
+    return P, T, S, M
+
+
+# ---------------------------------------------------------------- streaming
+def iter_groups(parquet_paths, mode, trips_set):
+    """Yield materialized (trip_id, vehicle_id, route arr, lat, lng, ts)."""
+    con = duckdb.connect()
+    con.execute("SET memory_limit='4GB'")
+    files = ", ".join(f"'{str(p).replace(chr(92), '/')}'" for p in parquet_paths)
+    q = f"""
+        SELECT trip_id, vehicle_id, route_id, lat, lng, ts_utc
+        FROM read_parquet([{files}]) ORDER BY trip_id, vehicle_id, ts_utc
+    """
+    cur = con.execute(q)
+
+    def consume(rows, upto):
+        if upto == 0:
+            return
+        head = rows[0]
+        sel = rows[:upto]
+        arr = np.array([(r[3], r[4], r[5], r[2] if r[2] is not None else np.nan)
+                        for r in sel], dtype=float)
+        yield (str(head[0]), str(head[1]),
+               arr[:, 3], arr[:, 0], arr[:, 1], arr[:, 2])
+
+    def split_point(rows):
+        lo, hi = 0, len(rows)
+        key = (rows[0][0], rows[0][1])
+        while lo < hi:
+            mid = (lo + hi) // 2
+            if (rows[mid][0], rows[mid][1]) <= key:
+                lo = mid + 1
+            else:
+                hi = mid
+        return lo
+
+    batch_rows = []
+    while True:
+        rows = cur.fetchmany(100_000)
+        if not rows:
+            break
+        batch_rows.extend(rows)
+        while len(batch_rows) and \
+                (batch_rows[0][0], batch_rows[0][1]) != (batch_rows[-1][0], batch_rows[-1][1]):
+            cut = split_point(batch_rows)
+            yield from consume(batch_rows, cut)
+            batch_rows = batch_rows[cut:]
+    if batch_rows:
+        yield from consume(batch_rows, len(batch_rows))
+    cur.close()
+    con.close()
+
+
 def detect_mode(day_pings_path, trips_set):
     con = duckdb.connect()
     sample = con.execute(f"""
@@ -202,75 +287,48 @@ def detect_mode(day_pings_path, trips_set):
     return "trips" if hits >= len(sample) * 0.5 else "routes"
 
 
-def main(day: str, mode: str = "auto"):
+def main(day: str, mode: str = "auto", workers: int = 0):
     ensure_dirs()
     src = sorted(CLEAN.glob(f"pings_{day}.parquet"))
     if not src:
         raise SystemExit(f"[03] no pings_{day}.parquet — run 02 first")
 
-    shapes, route_shapes, shape_ref, stop_xy, trips_df = load_gtfs()
-    trips_meta = trips_df.set_index("trip_id")
-    trips_set = set(trips_df.trip_id.astype(str))
     if mode == "auto":
-        mode = detect_mode(src[0], trips_set)
-    print(f"[03] {day}: mode={mode}")
+        trips_quick = pd.read_csv(GTFS / "trips.txt", dtype=str)
+        mode = detect_mode(src[0], set(trips_quick.trip_id.astype(str)))
+    workers = workers or max(1, (os.cpu_count() or 4) // 2)
+    print(f"[03] {day}: mode={mode} workers={workers}")
 
     passages, traversals = [], []
-    n_trips = n_kept = n_segs = 0
+    n_trips = n_segs_total = n_matched = 0
 
-    for (trip_id, vehicle_id), plat, plng, pts, proute in iter_trips(src):
-        n_trips += 1
-        if len(proute) == 0 or not np.isfinite(proute[0]):
-            continue
-        rv = float(proute[0])
-        route_id = str(int(rv)) if rv.is_integer() else str(rv)
-        px = (plng - C_LNG) * K_LNG
-        py = (plat - C_LAT) * K_LAT
+    def absorb(result):
+        nonlocal n_segs_total, n_matched
+        P, T, S, M = result
+        passages.extend(P)
+        traversals.extend(T)
+        n_segs_total += S
+        n_matched += M
 
-        # gap segmentation
-        gaps = np.diff(pts)
-        seg_starts = np.concatenate([[0], np.where(gaps > SEGMENT_GAP_S)[0] + 1])
-
-        if mode == "trips":
-            cand_shapes = []
-            meta = trips_meta.loc[trip_id] if trip_id in trips_meta.index else None
-            if meta is not None:
-                cand_shapes.append((route_id, str(meta.shape_id)))
-        else:
-            cand_shapes = [(route_id, sh)
-                           for sh in sorted(route_shapes.get(route_id, []))]
-        if not cand_shapes:
-            continue
-
-        for si, start in enumerate(seg_starts):
-            end = seg_starts[si + 1] if si + 1 < len(seg_starts) else len(pts)
-            if end - start < MIN_TRIP_PINGS:
-                continue
-            n_segs += 1
-            seg_px, seg_py, seg_t = px[start:end], py[start:end], pts[start:end]
-            # pick best-fitting shape
-            best = None
-            for _, shape_id in cand_shapes:
-                shape = shapes.get(shape_id)
-                if shape is None:
-                    continue
-                s, d = project_to_polyline(seg_px, seg_py, *shape)
-                ok = d <= 2 * NEAR_SHAPE_M
-                if ok.sum() < MIN_TRIP_PINGS:
-                    continue
-                score = float(np.mean(np.sort(d)[:max(20, ok.sum() // 2)]))
-                if best is None or score < best[0]:
-                    best = (score, shape_id, s, d)
-            if best is None:
-                continue
-            n_kept += 1
-            _, shape_id, s_all, d_all = best
-            seg_mask = d_all <= NEAR_SHAPE_M
-            ref = shape_ref.get(shape_id)
-            passages_for_segment(s_all, d_all, seg_t, seg_mask,
-                                  shapes.get(shape_id), ref, stop_xy,
-                                  trip_id, vehicle_id, route_id,
-                                  passages, traversals)
+    if workers <= 1:
+        _worker_init(mode)
+        for g in iter_groups(src, mode, _W.get("trips_set", set())):
+            n_trips += 1
+            absorb(_trajectory(g))
+    else:
+        with mp.Pool(workers, initializer=_worker_init, initargs=(mode,)) as pool:
+            batch, count = [], 0
+            for g in iter_groups(src, mode, set()):
+                n_trips += 1
+                batch.append(g)
+                if len(batch) >= BATCH_TRAJECTORIES:
+                    absorb(pool.apply(_worker_batch, (batch,)))
+                    batch = []
+                    if n_trips % 5000 < BATCH_TRAJECTORIES:
+                        print(f"[03] {day}: {n_trips:,} trajectories in ...",
+                              flush=True)
+            if batch:
+                absorb(pool.apply(_worker_batch, (batch,)))
 
     pd.DataFrame(passages, columns=["trip_id", "vehicle_id", "route_id", "stop_id",
                                     "stop_seq", "tsec"]) \
@@ -278,8 +336,8 @@ def main(day: str, mode: str = "auto"):
     pd.DataFrame(traversals, columns=["route_id", "trip_id", "from_stop", "to_stop",
                                       "dist_m", "dur_s", "tsec", "hour_ist"]) \
       .to_parquet(CLEAN / f"traversals_{day}.parquet", index=False)
-    print(f"[03] {day}: {n_trips:,} trips scanned, {n_segs:,} segments, "
-          f"{n_kept:,} matched -> {len(passages):,} passages, "
+    print(f"[03] {day}: {n_trips:,} trips scanned, {n_segs_total:,} segments, "
+          f"{n_matched:,} matched -> {len(passages):,} passages, "
           f"{len(traversals):,} traversals")
 
 
@@ -288,10 +346,12 @@ if __name__ == "__main__":
     ap.add_argument("--day", default="2026_10_15")
     ap.add_argument("--all", action="store_true")
     ap.add_argument("--mode", default="auto", choices=["auto", "trips", "routes"])
+    ap.add_argument("--workers", type=int, default=0,
+                    help="0 = auto (cpu/2); 1 = single process")
     a = ap.parse_args()
     days = [a.day]
     if a.all:
         days = [p.stem.replace("pings_", "")
                 for p in sorted(CLEAN.glob("pings_*.parquet"))]
     for d in days:
-        main(d, a.mode)
+        main(d, a.mode, a.workers)
