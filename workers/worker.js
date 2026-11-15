@@ -43,6 +43,16 @@ export default {
                    geo_routes: g?.n ?? 0, headway_cells: w?.n ?? 0 });
       }
 
+      if (p === "/days" || p === "/api/days") {
+        const m = await db.prepare(
+          "SELECT v FROM meta WHERE k='days'").first();
+        try {
+          return j({ days: m ? JSON.parse(m.v) : [] });
+        } catch {
+          return j({ days: [] });
+        }
+      }
+
       if (p === "/api/geo" || p === "/geo") {
         const hour = parseInt(url.searchParams.get("hour") ?? "9", 10) || 9;
         const limit = Math.min(parseInt(url.searchParams.get("limit") ?? "800", 10) || 800, 1500);
