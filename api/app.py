@@ -165,6 +165,10 @@ RSR = {str(r.route_id): float(r.speed_kmh)
        for r in _rs_real.itertuples()} if len(_rs_real) else {}
 CHR = {int(r.hour_ist): float(r.speed_kmh)
        for r in _ch_real.itertuples()} if len(_ch_real) else {}
+_rhd_real = _load_real("route_hour_dow_real.parquet")
+USE_DOW = False   # flip to True when hold_pings shows the dow arm beating pooled
+DRHR = {(str(r.route_id), int(r.dow_ist), int(r.hour_ist)): float(r.speed_kmh)
+        for r in _rhd_real.itertuples()} if len(_rhd_real) else {}
 if CHR:
     CH_DEFAULT = float(np.median(list(CHR.values())))
 WAIT50 = {(str(r.route_id), str(r.stop_id)): float(r.h50_s)
@@ -197,9 +201,8 @@ def wait_minutes(route_id, stop_id, hour=None):
 # (old ride_time superseded by the day-aware version above)
 
 
-def leg_seconds(route_id, a, b, dist_m, hour, day=None, win=None):
-    """Median traversal seconds for one leg.
-    day: (drh, dravg) tuples from _day_speeds; win: {route: speed} recent window."""
+def leg_seconds(route_id, a, b, dist_m, hour, day=None, win=None, dow=None):
+    """Median traversal seconds for one leg. DOW-aware speed first."""
     e = E50.get((route_id, a, b, hour))
     if e and day is None and win is None:
         return e[0]
@@ -209,6 +212,13 @@ def leg_seconds(route_id, a, b, dist_m, hour, day=None, win=None):
         drh, dravg = day
         sp = (drh.get((route_id, hour)) or dravg.get(route_id)
               or RHR.get((route_id, hour)) or RSR.get(route_id)
+              or RH.get((route_id, hour)) or RS.get(route_id)
+              or CHR.get(hour) or CH.get(hour) or CH_DEFAULT)
+        return dist_m * 3.6 / max(1.0, sp)
+    if dow is not None and USE_DOW:
+        sp = (DRHR.get((route_id, dow, hour))
+              or RHR.get((route_id, hour))
+              or RSR.get(route_id)
               or RH.get((route_id, hour)) or RS.get(route_id)
               or CHR.get(hour) or CH.get(hour) or CH_DEFAULT)
         return dist_m * 3.6 / max(1.0, sp)
@@ -314,11 +324,12 @@ def ride_time(pat, i, j, start_epoch, day=None, win=None):
     lo = hi = 0.0
     for k in range(i, j):
         h = int((t + 19800) // 3600 % 24)  # IST hour at leg start
+        dw = ((int(t // 86400) + 3) % 7) + 1  # isodow (1=Mon..7=Sun)
         a, b = pat["stops"][k], pat["stops"][k + 1]
         dist = pat["leg_m"][k]
         e = (E50.get((pat["route_id"], a, b, h)) if (day is None and win is None)
              else None)
-        s = leg_seconds(pat["route_id"], a, b, dist, h, day=day, win=win)
+        s = leg_seconds(pat["route_id"], a, b, dist, h, day=day, win=win, dow=dw)
         total += s
         t += s
         if e:

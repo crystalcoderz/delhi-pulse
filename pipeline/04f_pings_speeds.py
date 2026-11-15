@@ -35,6 +35,7 @@ def main(day: str):
         WITH seq AS (
             SELECT route_id, lat, lng, ts_utc,
                    hour(to_timestamp(ts_utc + {IST_OFFSET_S})) AS hour_ist,
+                   isodow(to_timestamp(ts_utc + {IST_OFFSET_S})) AS dow_ist,
                    lead(lat) OVER w AS nlat,
                    lead(lng) OVER w AS nlng,
                    lead(ts_utc) OVER w AS nts
@@ -42,20 +43,20 @@ def main(day: str):
             WHERE route_id IS NOT NULL
             WINDOW w AS (PARTITION BY trip_id, vehicle_id ORDER BY ts_utc)
         ), pairs AS (
-            SELECT route_id, hour_ist,
+            SELECT route_id, hour_ist, dow_ist,
                    sqrt( power((nlng-lng)*111320.0*cos(radians((nlat+lat)/2.0)),2)
                        + power((nlat-lat)*110540.0,2) ) AS dist_m,
                    nts - ts_utc AS dt_s
             FROM seq
             WHERE nts > ts_utc AND nts - ts_utc <= 120
         )
-        SELECT route_id, hour_ist,
+        SELECT route_id, dow_ist, hour_ist,
                SUM(dist_m) / NULLIF(SUM(dt_s),0) * 3.6 AS speed_kmh,
                COUNT(*) AS n
         FROM pairs
         WHERE dist_m > {MIN_PAIR_M}
           AND dist_m / dt_s * 3.6 BETWEEN {MIN_PAIR_KMH} AND {MAX_PAIR_KMH}
-        GROUP BY 1, 2
+        GROUP BY 1, 2, 3
     """).df()
 
     # trip-weighted route aggregate (for coarse replay fallback)

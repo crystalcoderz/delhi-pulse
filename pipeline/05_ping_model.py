@@ -32,6 +32,15 @@ def main():
                    include_groups=False)
             .reset_index())
 
+    # (route, dow, hour): pair-count weighted across days — weekend-aware
+    rhd = (df.groupby(["route_id", "dow_ist", "hour_ist"])
+             .apply(lambda x: pd.Series({
+                 "speed_kmh": (x.speed_kmh * x.n).sum() / max(1, x.n.sum()),
+                 "n": int(x.n.sum()), "days": int(len(x))}),
+                    include_groups=False)
+             .reset_index())
+    rhd.to_parquet(MODEL / "route_hour_dow_real.parquet", index=False)
+
     # route overall: from per-day aggregate trip-weighted averages
     agg_frames = [pd.read_parquet(p) for p in sorted(CLEAN.glob("speedsagg_*.parquet"))]
     a = pd.concat(agg_frames, ignore_index=True)
