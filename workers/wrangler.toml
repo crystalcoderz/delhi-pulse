@@ -1,0 +1,8 @@
+name = "delhi-pulse"
+main = "worker.js"
+compatibility_date = "2026-10-01"
+
+[[d1_databases]]
+binding = "delhi_pulse"
+database_name = "delhi-pulse"
+database_id = "319386da-f054-4358-aed7-2eca7f77b317"

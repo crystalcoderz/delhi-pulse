@@ -1,0 +1,44 @@
+{
+  "generated_utc": "2026-11-15T14:28:12.496612",
+  "model": {
+    "traversals": {
+      "version": "v0-medians",
+      "generated_utc": "2026-11-15T14:26:01.366459",
+      "days": [
+        "2026_10_15"
+      ],
+      "n_traversal_rows": 1061,
+      "n_trips_observed": 114,
+      "n_edge_hour_cells": 1,
+      "n_routes": 3,
+      "quantiles": "p50 only (v0); p10/p90 arrive with the LightGBM pass"
+    },
+    "ping_speeds": {
+      "version": "v1-pings-real",
+      "generated_utc": "2026-11-15T14:21:32.918339",
+      "source_days": [
+        "2026_10_13",
+        "2026_10_14",
+        "2026_10_15"
+      ],
+      "n_route_hour_cells": 31536,
+      "n_routes": 2150,
+      "n_city_hour_cells": 24,
+      "note": "network speeds from ping pairs; stop-level quantiles arrive with GTFS"
+    }
+  },
+  "cleaning": {},
+  "holdout": {
+    "n_eval": 800,
+    "n_skipped": 0,
+    "mae_min": 0.42,
+    "bias_min": -0.0,
+    "within_5min": 1.0,
+    "within_10min": 1.0,
+    "test_days": "in-sample"
+  },
+  "findings": [
+    "2150 routes profiled across 3 days (31536 route x hour cells)",
+    "edge-level replay: MAE 0.42 min, 100% within 10 min (in-sample)"
+  ]
+}
