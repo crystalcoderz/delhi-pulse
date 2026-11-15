@@ -11,12 +11,17 @@ from/to formats: "lat,lng" | "stop_name_text" (fuzzy) | "stop:<stop_id>"
 """
 import json
 import math
+import os
 import sys
 import datetime as dt
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
+from dotenv import load_dotenv
+
+load_dotenv()   # .env: GTFS_RT_URL / keys etc (never committed)
+
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
@@ -35,6 +40,13 @@ NEAR_KM = 2.5
 app = FastAPI(title="Delhi Pulse", version="0.1.0")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"],
                    allow_headers=["*"])
+
+# live layer: starts only when GTFS_RT_URL is present in the environment
+from .live import LIVE as LIVE_LIVE  # noqa: E402
+_rt_url = os.environ.get("GTFS_RT_URL")
+if _rt_url:
+    LIVE_LIVE.url = _rt_url
+    LIVE_LIVE.start()
 
 # ---------------------------------------------------------------- static GTFS
 stops = pd.read_csv(GTFS / "stops.txt")
@@ -152,13 +164,16 @@ def wait_minutes(route_id, stop_id):
 # (old ride_time superseded by the day-aware version above)
 
 
-def leg_seconds(route_id, a, b, dist_m, hour, day=None):
-    """Median traversal seconds for one leg."""
+def leg_seconds(route_id, a, b, dist_m, hour, day=None, win=None):
+    """Median traversal seconds for one leg.
+    day: (drh, dravg) tuples from _day_speeds; win: {route: speed} recent window."""
     e = E50.get((route_id, a, b, hour))
-    if e and day is None:
+    if e and day is None and win is None:
         return e[0]
+    if win and route_id in win:
+        return dist_m * 3.6 / max(1.0, win[route_id])
     if day is not None:
-        drh, dravg = _day_speeds(day)
+        drh, dravg = day
         sp = (drh.get((route_id, hour)) or dravg.get(route_id)
               or RH.get((route_id, hour)) or RS.get(route_id)
               or CH.get(hour) or CH_DEFAULT)
@@ -213,7 +228,49 @@ def _day_speeds(day):
     return _DAY_SPEED_CACHE[day]
 
 
-def ride_time(pat, i, j, start_epoch, day=None):
+_WINDOW_CACHE = {}
+
+
+def _window_speeds(day, end_epoch, window_s=2700.0, min_pairs=4):
+    """Per-route implied speeds from ping pairs inside [end-window, end].
+    This is the replay twin of LiveLayer.window_speeds() — same computation,
+    archive slice instead of live store. Cached in 15-min buckets."""
+    key = (day, int(end_epoch // 900), int(window_s))
+    if key in _WINDOW_CACHE:
+        return _WINDOW_CACHE[key]
+    path = CLEAN / f"pings_{day}.parquet"
+    if not path.exists():
+        _WINDOW_CACHE[key] = {}
+        return {}
+    import duckdb
+    con = duckdb.connect()
+    df = con.execute(f"""
+        WITH seq AS (
+            SELECT route_id, lat, lng, ts_utc,
+                   lead(lat) OVER w AS nlat,
+                   lead(lng) OVER w AS nlng,
+                   lead(ts_utc) OVER w AS nts
+            FROM read_parquet('{path.as_posix()}')
+            WHERE ts_utc BETWEEN {int(end_epoch - window_s)} AND {int(end_epoch)}
+            WINDOW w AS (PARTITION BY trip_id, vehicle_id ORDER BY ts_utc)
+        )
+        SELECT route_id,
+               SUM(sqrt(power((nlng-lng)*111320.0*cos(radians((nlat+lat)/2.0)),2)
+                        + power((nlat-lat)*110540.0,2) )) AS dist_sum,
+               SUM(nts - ts_utc) AS dt_sum,
+               COUNT(*) AS n
+        FROM seq
+        WHERE nts > ts_utc AND nts - ts_utc <= 120
+        GROUP BY 1 HAVING COUNT(*) >= {min_pairs}
+    """).df()
+    con.close()
+    out = {str(r.route_id): float(r.dist_sum / max(1e-9, r.dt_sum) * 3.6)
+           for r in df.itertuples()}
+    _WINDOW_CACHE[key] = out
+    return out
+
+
+def ride_time(pat, i, j, start_epoch, day=None, win=None):
     """Sum leg seconds i..j with hour refinement.
     Returns (total_s, end_epoch, p10_s, p90_s)."""
     t = start_epoch
@@ -223,8 +280,9 @@ def ride_time(pat, i, j, start_epoch, day=None):
         h = int((t + 19800) // 3600 % 24)  # IST hour at leg start
         a, b = pat["stops"][k], pat["stops"][k + 1]
         dist = pat["leg_m"][k]
-        e = E50.get((pat["route_id"], a, b, h)) if day is None else None
-        s = leg_seconds(pat["route_id"], a, b, dist, h, day=day)
+        e = (E50.get((pat["route_id"], a, b, h)) if (day is None and win is None)
+             else None)
+        s = leg_seconds(pat["route_id"], a, b, dist, h, day=day, win=win)
         total += s
         t += s
         if e:
@@ -291,9 +349,23 @@ def journeys(fromq: str = Query(..., alias="from"),
         dep = dep.replace(tzinfo=IST)
     dep = dep.astimezone(IST)
     day = None
+    win = None
+    replay_mode = None
+    strday = None
     if asOf:
         t = dt.datetime.fromisoformat(asOf)
-        day = f"{t.year:04d}_{t.month:02d}_{t.day:02d}"
+        strday = f"{t.year:04d}_{t.month:02d}_{t.day:02d}"
+        day = _day_speeds(strday) if strday else None
+        if t.hour or t.minute or t.second:
+            win = _window_speeds(strday, t.timestamp(), window_s=2700)
+            replay_mode = f"window@{asOf}"
+        else:
+            replay_mode = f"day@{strday}"
+    elif LIVE_LIVE.status()["url"]:
+        wl = LIVE_LIVE.window_speeds(window_s=900)
+        if wl:
+            win = {r: sp for r, (sp, n) in wl.items()}
+            replay_mode = "live"
 
     o_near = nearest_stops(o["lat"], o["lng"]) or \
         nearest_stops(o["lat"], o["lng"], k=5, radius_km=6)
@@ -322,7 +394,8 @@ def journeys(fromq: str = Query(..., alias="from"),
                         break
                     wait_a = wait_minutes(pat["route_id"], oa["stop_id"])
                     board_epoch = dep_epoch + oa["walk_min"] * 60 + wait_a * 60
-                    ride_f, _, ride_lo, ride_hi = ride_time(pat, i, j, board_epoch, day=day)
+                    ride_f, _, ride_lo, ride_hi = ride_time(
+                        pat, i, j, board_epoch, day=day, win=win)
                     total = (oa["walk_min"] + wait_a + ride_f / 60 + db_["walk_min"])
                     options.append(dict(
                         _key=(pat["route_id"], oa["stop_id"]),
@@ -376,10 +449,12 @@ def journeys(fromq: str = Query(..., alias="from"),
                             break
                         wait_a = wait_minutes(A["route_id"], oa["stop_id"])
                         board_epoch = dep_epoch + oa["walk_min"] * 60 + wait_a * 60
-                        rideA, t_at_tr, loA, hiA = ride_time(A, i, ia, board_epoch, day=day)
+                        rideA, t_at_tr, loA, hiA = ride_time(
+                            A, i, ia, board_epoch, day=day, win=win)
                         wait_b = wait_minutes(B["route_id"], tstop)
                         t_board2 = t_at_tr + TRANSFER_BUFFER_S + wait_b * 60
-                        rideB, _, loB, hiB = ride_time(B, tb, j, t_board2, day=day)
+                        rideB, _, loB, hiB = ride_time(
+                            B, tb, j, t_board2, day=day, win=win)
                         total = (oa["walk_min"] + wait_a + rideA / 60
                                  + (TRANSFER_BUFFER_S + wait_b * 60) / 60
                                  + rideB / 60 + db_["walk_min"])
@@ -444,7 +519,7 @@ def journeys(fromq: str = Query(..., alias="from"),
         picked.append(op)
         if len(picked) == 3:
             break
-    return dict(options=picked, replay_day=day)
+    return dict(options=picked, replay_day=strday, replay_mode=replay_mode)
 
 
 @app.get("/pulse")
@@ -503,6 +578,24 @@ def days():
     s = {p.stem.replace("speeds_", "")
          for p in CLEAN.glob("speeds_*.parquet")}
     return {"days": sorted(t | s)}
+
+
+@app.get("/status")
+def status():
+    pats = len(PAT)
+    live = LIVE_LIVE.status()
+    try:
+        holdout = json.loads((MODEL / "holdout_report.json").read_text())
+    except Exception:
+        holdout = None
+    try:
+        meta = json.loads((MODEL / "meta.json").read_text())
+    except Exception:
+        meta = None
+    return dict(ok=True, patterns=pats, edges=len(E50), routes=len(RS),
+                live=live, holdout=holdout, model=meta,
+                replay_days=sorted({p.stem.replace("pings_", "")
+                                     for p in CLEAN.glob("pings_*.parquet")}))
 
 
 if (ROOT / "web").exists():
