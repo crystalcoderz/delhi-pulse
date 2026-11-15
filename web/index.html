@@ -5,8 +5,8 @@
 <meta charset="utf-8"/>
 <meta name="viewport" content="width=device-width, initial-scale=1"/>
 <title>Delhi Pulse</title>
-<script src="https://unpkg.com/maplibre-gl@3.6.2/dist/maplibre-gl.js"></script>
-<link href="https://unpkg.com/maplibre-gl@3.6.2/dist/maplibre-gl.css" rel="stylesheet"/>
+<script src="/web/vendor/maplibre-gl.js"></script>
+<link href="/web/vendor/maplibre-gl.css" rel="stylesheet"/>
 <style>
   :root { --bg:#10121b; --panel:#161927; --ink:#e8eaf2; --dim:#8b90a5; --acc:#3ddc97; }
   * { box-sizing:border-box; margin:0; }
@@ -69,8 +69,10 @@ const API = location.protocol.startsWith('http') && location.pathname.startsWith
 const map = new maplibregl.Map({
   container:'map', style:'https://basemaps.cartocdn.com/gl/dark-matter-gl-style/style.json',
   center:[77.21,28.62], zoom:10.5 });
+window.map = map;                      // exposed for QA + console tinkering
 map.addControl(new maplibregl.NavigationControl());
 let picks = {from:null,to:null}, clicks = 0, markers = [], drawnLayers = [];
+window.picks = picks;
 
 function clearRoute(){ drawnLayers.forEach(id=>{ map.removeLayer(id); map.removeSource(id); });
   drawnLayers = []; }
@@ -85,7 +87,7 @@ async function suggest(box, sugBox){
   sugBox.innerHTML=''; (r||[]).forEach(s=>{
     const d=document.createElement('div');
     d.textContent = s.name;
-    d.onclick=()=>{ setPoint(sugBox.id==='fromSug'?'from':'to', s.name, [s.lng,s.lat], `stop:${s.stop_id}`);
+    d.onclick=()=>{ setPoint(sugBox.id==='fromSug'?'from':'to', s.name, [s.lng,s.lat], s.stop_id);
       box.value=s.name; sugBox.style.display='none'; };
     sugBox.appendChild(d); });
   sugBox.style.display = r.length? 'block':'none';
@@ -125,7 +127,7 @@ async function plan(){
   const asof = $('asof').value ? $('asof').value + 'T12:00:00+05:30' : '';
   const r = await fetch(`${API}/journeys?from=${encodeURIComponent(f)}&to=${encodeURIComponent(t)}`
       + (dep?`&depart=${encodeURIComponent(dep)}`:'')
-      + (asof?`&asOf=${encodeURIComponent(asof)}`:'')).then(r=>r.json()).catch(e=>({options:[],note:e.message}));
+      + (asof?`&asOf=${encodeURIComponent(asof)}`:'')).then(r=>r.json().then(j=>r.ok?j:{options:[],note:j.detail||('HTTP '+r.status)})).catch(e=>({options:[],note:e.message}));
   let usualTop = null;
   if(asof && r.options && r.options.length){
     try {
