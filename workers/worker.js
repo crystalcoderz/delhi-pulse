@@ -236,10 +236,13 @@ export default {
         };
         if (departT) {
           // Google requires departureTime within [now, now + 7 days]; outside
-          // that window it 400s, so let it default to live traffic instead
-          const t = new Date(departT).getTime();
+          // that window it 400s, so let it default to live traffic instead.
+          // Garbage input must not throw (D1 discipline applies here too).
+          let s = departT.trim();
+          if (/\d{2}:\d{2}(:\d{2})? [+-]\d{2}:?\d{2}$/.test(s)) s = s.replace(" ", "+");
+          const t = new Date(s).getTime();
           const now = Date.now();
-          if (t > now && t < now + 7 * 24 * 3600 * 1000)
+          if (Number.isFinite(t) && t > now && t < now + 7 * 24 * 3600 * 1000)
             body.departureTime = new Date(t).toISOString();
         }
         const r = await fetch(
@@ -293,6 +296,7 @@ export default {
       // ---- stop search ----
       if (p === "/api/stops/search" || p === "/stops/search") {
         const q = url.searchParams.get("q") || "";
+        if (q.trim().length < 2) return j([]);   // D6: no arbitrary matches
         const lower = q.toLowerCase();
         const results = [];
         for (const sid of Object.keys(M.stops)) {
@@ -350,7 +354,9 @@ export default {
         const fromT = url.searchParams.get("from");
         const toT = url.searchParams.get("to");
         const departT = url.searchParams.get("depart");
-        const maxO = parseInt(url.searchParams.get("max") || "3", 10);
+        const maxRaw = parseInt(url.searchParams.get("max") || "3", 10);
+        const maxO = Number.isFinite(maxRaw)
+          ? Math.min(6, Math.max(1, maxRaw)) : 3;   // D3: clamp 1..6
 
         if (!fromT || !toT) return j({ error: "from, to required" }, 400);
 
@@ -376,7 +382,33 @@ export default {
         if (!origin) return j({ options: [], note: `cannot find "${fromT}"` });
         if (!dest) return j({ options: [], note: `cannot find "${toT}"` });
 
-        const depEpoch = departT ? new Date(departT).getTime() / 1000 : Date.now() / 1000;
+        // D4: reject coordinate queries that are nowhere near Delhi
+        const isCoordText = (t) =>
+          /^(-?\d+\.?\d*),\s*(-?\d+\.?\d*)$/.test((t || "").trim());
+        const inDelhi = (lat, lng) =>
+          lat > 27.0 && lat < 30.0 && lng > 74.5 && lng < 79.5;
+        for (const t of [fromT, toT]) {
+          if (isCoordText(t)) {
+            const [la, ln] = t.trim().split(",").map(parseFloat);
+            if (!inDelhi(la, ln))
+              return j({ error: "coordinates are outside the Delhi region" }, 400);
+          }
+        }
+
+        // D1: robust depart parsing. A raw '+' in a URL query arrives here
+        // as a space; bare local times are IST (matching the local API);
+        // unparseable values get a 400 with a hint, not a 500.
+        let depEpoch = Date.now() / 1000;
+        if (departT) {
+          let s = departT.trim();
+          if (/\d{2}:\d{2}(:\d{2})? [+-]\d{2}:?\d{2}$/.test(s)) s = s.replace(" ", "+");
+          else if (/^\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}(:\d{2})?$/.test(s)) s += "+05:30";
+          const t = new Date(s).getTime();
+          if (!Number.isFinite(t))
+            return j({ error: `depart cannot be parsed: "${departT}"`,
+                       hint: "use ISO 8601, e.g. 2026-11-17T08:30:00+05:30" }, 400);
+          depEpoch = t / 1000;
+        }
         const hour0 = Math.floor((depEpoch + 19800) / 3600 % 24);
 
         // Always include nearby stops, plus the exact stop if stop: given
@@ -445,8 +477,19 @@ export default {
                   ?? M.route_avg[route]
                   ?? M.city_hour[hour0] ?? 18;
                 const rideS = distM * 3.6 / sp;
-                const hw = M.headway[route]?.[hour0];
-                const waitMin = hw ? Math.min(15, Math.max(0.75, hw/120)) : 5;
+                // B4: a route with no observed headway in this hour (±1h
+                // grace for sparse rows) is not running — offer no bus
+                // rather than the old 5-minute default wait.
+                let waitMin = null;
+                for (const dh of [0, -1, 1]) {
+                  const h = ((hour0 + dh) % 24 + 24) % 24;
+                  const w = M.headway[route]?.[h];
+                  if (w != null) {
+                    waitMin = Math.min(15, Math.max(0.75, w / 120));
+                    break;
+                  }
+                }
+                if (waitMin == null) continue;
                 const walkOMin = oa.d * 1.3 / 80;
                 const walkDMin = da.d * 1.3 / 80;
                 const total = walkOMin + waitMin + rideS/60 + walkDMin;
@@ -477,8 +520,9 @@ export default {
                       coords: [[da.lat, da.lng], [dest.lat, dest.lng]] },
                   ],
                   eta_p50_min: Math.round(total * 10) / 10,
-                  eta_p10_min: Math.round((walkOMin + waitMin + rideS*0.85/60) * 10) / 10,
-                  eta_p90_min: Math.round((walkOMin + waitMin + rideS*1.35/60) * 10) / 10,
+                  // D2: bands must cover the whole journey incl. the final walk
+                  eta_p10_min: Math.round((walkOMin + waitMin + walkDMin + rideS*0.85/60) * 10) / 10,
+                  eta_p90_min: Math.round((walkOMin + waitMin + walkDMin + rideS*1.35/60) * 10) / 10,
                   confidence: "edge-route-hour",
                 });
                 if (options.length >= 30) break;
@@ -515,8 +559,14 @@ export default {
           });
 
           const waitOf = (route, hour) => {
-            const h = M.headway[route]?.[hour];
-            return h ? Math.min(15, Math.max(0.75, h / 120)) : 5;
+            // B4: same service rule as the direct search — no headway within
+            // ±1h means the route is not running; null, not the 5-min default
+            for (const dh of [0, -1, 1]) {
+              const h = ((hour + dh) % 24 + 24) % 24;
+              const w = M.headway[route]?.[h];
+              if (w != null) return Math.min(15, Math.max(0.75, w / 120));
+            }
+            return null;
           };
           const speedOf = (route, hour) =>
             M.speeds[route]?.[hour] ?? M.route_avg[route]
@@ -560,12 +610,14 @@ export default {
                   const walkOMin = oa.d * 1.3 / 80;
                   const walkDMin = da.d * 1.3 / 80;
                   const waitA = waitOf(A.r, hour0);
+                  if (waitA == null) continue;      // B4: A not running this hour
                   const rideA = dA * 3.6 / speedOf(A.r, hour0) / 60;
                   const thour = Math.floor(
                     (depEpoch + (walkOMin + waitA + rideA) * 60 + 19800)
                     / 3600 % 24);
                   const waitB = waitOf(B.r, thour);
-                  const xferMin = 2 + waitB;            // 2-min transfer buffer
+                  if (waitB == null) continue;      // B4: B not running at transfer hour
+                  const xferMin = 2 + waitB;         // 2-min transfer buffer
                   const rideB = dB * 3.6 / speedOf(B.r, thour) / 60;
                   const total = walkOMin + waitA + rideA + xferMin
                               + rideB + walkDMin;
@@ -622,11 +674,20 @@ export default {
           }
         } catch (e) { /* transfer search must never break direct results */ }
 
-        options.sort((a, b) => a.total_min - b.total_min);
-        options.forEach(o => delete o._key);
+        // C1: keep the best option per route sequence — the same itinerary
+        // via a nearby board/alight pair is not a different option
+        const bySeq = new Map();
+        for (const o of options) {
+          const k = (o.transfers || 0) + "|" + o.route_id;
+          const prev = bySeq.get(k);
+          if (!prev || o.total_min < prev.total_min) bySeq.set(k, o);
+        }
+        const ranked = [...bySeq.values()];
+        ranked.sort((a, b) => a.total_min - b.total_min);
+        ranked.forEach(o => delete o._key);
 
-        return j({ options: options.slice(0, Math.min(maxO, 6)),
-                   note: options.length ? null : "no route found within 1 transfer" });
+        return j({ options: ranked.slice(0, Math.min(maxO, 6)),
+                   note: ranked.length ? null : "no route found within 1 transfer" });
       }
 
       // ---- lookups (existing) ----
@@ -657,7 +718,7 @@ export default {
           ok: true,
           routes: Object.keys(M2.route_avg).length,
           patterns: M2.patterns.length,
-          edges: 0,
+          edges: M2.edge_count ?? 0,   // real edge cells land with the A2 export
           live: { vehicles: 0, url: false, n_fetch: 0 },
           note: "edge deployment"
         });
