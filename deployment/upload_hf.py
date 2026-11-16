@@ -16,7 +16,7 @@ import os as _os
 # .env holds HF_TOKEN (and other credentials) in dev/finalize runs
 try:
     from dotenv import load_dotenv
-    load_dotenv(Path(__file__).resolve().parent.parent / ".env", override=True)
+    load_dotenv(ROOT / ".env", override=True)
 except ImportError:
     pass
 
