@@ -17,3 +17,5 @@ model/patterns_*.pkl
 
 .vercel/
 
+.tmp/
+.wrangler/

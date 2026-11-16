@@ -168,9 +168,12 @@ if wh_path.exists():
         hrs = wh_hours.get(rid)
         if not hrs:
             continue
-        window = [h for h in hrs if 11 <= h <= 17]
-        pool = window or list(hrs)
-        best = max(pool, key=lambda h: speeds[rid].get(h, -1))
+        # candidates must be hours the route actually runs AND has speed for;
+        # never widen outside the off-peak window to night hours
+        pool = [h for h in hrs if 11 <= h <= 17 and h in speeds[rid]]
+        if not pool:
+            continue
+        best = max(pool, key=lambda h: speeds[rid][h])
         usual_hour[rid] = int(best)
 
 headway = {}

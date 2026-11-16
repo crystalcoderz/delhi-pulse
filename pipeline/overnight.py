@@ -76,14 +76,43 @@ def main():
         log(f"stage-03 FAILED days (skipped; rerunnable): {stage3_fail}")
 
     log("=== refresh chain ===")
-    run("pipeline/04f_pings_speeds.py", "--all")
-    run("pipeline/05_ping_model.py")
-    run("pipeline/04_train_model.py")
-    run("pipeline/04g_headways.py")
-    run("validation/hold_pings.py")
-    run("validation/build_report.py")
-    run("deployment/export_d1.py")
-    run("deployment/split_sql.py")
+    # any failure here means downstream stages would silently consume the
+    # PREVIOUS night's model files and stamp them fresh — the exact bug that
+    # shipped a stale 18-day edge_hour as v1.1 on 16 Nov. Make it fatal.
+    chain_fail = []
+    stages = [
+        ("pipeline/04f_pings_speeds.py", "--all"),
+        ("pipeline/05_ping_model.py",),
+        ("pipeline/04_train_model.py",),
+        ("pipeline/04g_headways.py",),
+        ("validation/hold_pings.py",),
+        ("validation/holdout_journeys.py",),
+        ("validation/build_report.py",),
+        ("deployment/export_d1.py",),
+        ("deployment/split_sql.py",),
+    ]
+    for st in stages:
+        if not run(*st):
+            chain_fail.append(st[0])
+            break           # stop before anything downstream gets a new stamp
+    if chain_fail:
+        log(f"!! MODEL CHAIN FAILED at {chain_fail[0]} — NOTHING was exported; "
+            f"model/ and docs/ still hold the last good run. Fix and rerun.")
+        sys.exit(1)
+
+    # freshness guard: exports must never be newer than the corpus they claim
+    import datetime as _dt
+    import json as _json
+    _meta = _json.loads((ROOT / "model/meta.json").read_text(encoding="utf-8"))
+    newest_in = max(p.stat().st_mtime for p in CLEAN.glob("traversals_*.parquet"))
+    if (ROOT / "model/meta.json").stat().st_mtime < newest_in:
+        log("!! freshness check failed: meta.json predates the newest traversal "
+            "file — a stage failed silently. Refusing to declare complete.")
+        sys.exit(1)
+    if len(_meta.get("days", [])) != len(list(CLEAN.glob('traversals_*.parquet'))):
+        log(f"!! meta covers {len(_meta.get('days', []))} days but corpus has "
+            f"{len(list(CLEAN.glob('traversals_*.parquet')))} files.")
+        sys.exit(1)
     log("=== overnight complete — run finalize_month.py --deploy when ready ===")
 
 
