@@ -1,91 +1,123 @@
 # Delhi Pulse
-### Real-time bus traffic model and journey planner — Transport Stack Hackathon 2026, Problem 1
 
-**Live:** [City Pulse at the edge](https://delhi-pulse.prayaas.workers.dev/) (real October DTC speeds on Cloudflare's network, APAC) · full planner runs locally (see Quickstart).
+**Real-time bus traffic model and journey planner for Delhi** — Transport Stack Hackathon 2026, Problem 1.
 
-Buses-as-probes traffic model for Delhi: one month of DTC bus GPS becomes
-time-dependent travel times, served through a Google Maps-style journey
-planner API with transfers, headway-based waits, quantile ETA bands,
-day/window time-travel replay, and a live GTFS-RT blend layer.
+> **Live:** [City Pulse at the edge](https://delhi-pulse.prayaas.workers.dev/) (laptop-independent, Cloudflare Workers + D1)
 
-## Quickstart (synthetic dress rehearsal, no downloads)
+> **Open source:** [github.com/crystalcoderz/delhi-pulse](https://github.com/crystalcoderz/delhi-pulse)
+
+---
+
+## What it does
+
+Every DTC bus is a traffic sensor. We process **19 days of October GPS data** (~550M raw pings from ~5,000 buses) into a quantile travel-time model covering **2,215 real Delhi routes, 6,862 real stops, and 839,382 (route, edge, hour) quantile cells**. On top of that: a journey planner API with walk + wait + ride legs, transfers, headway-aware waiting, time-travel replay, and a live GTFS-RT blend layer.
+
+**The result:** a user asks "Kashmere Gate ISBT to Nehru Place, 8:30am Tuesday" and gets three sensible options with real route numbers, boarding points, walk minutes, quantile ETA bands (p10/p50/p90), and the "usual" time at a quieter hour.
+
+## Architecture
+
+```
+Stage 01    Extract single day from 7z archive         (py7zr)
+Stage 02    Clean: dedupe, bbox, teleports             (DuckDB sqlite-scanner, ~26s/day)
+Stage 03    Project pings onto real GTFS shapes         (8-worker parallel, best-shape fit)
+Stage 04    Train: quantile aggregates per edge/hour   (839k cells from 19 days)
+Stage 04f   Ping-pair speeds (no GTFS needed)           (38k route x hour cells)
+Stage 04g   Headways from trip labels                  (39k route x hour cells)
+Stage 05    Network-wide aggregate speed model
+
+api/app.py     FastAPI journey planner
+api/live.py    GTFS-RT live layer (rolling window + blend)
+web/           MapLibre clients (planner + City Pulse map)
+workers/       Cloudflare Worker + D1 edge deployment
+deployment/    VM setup, D1 export, sandbox runner
+validation/    Holdout harnesses + OD comparison table
+```
+
+## What's measured (honest, leave-one-day-out)
+
+| Test | Metric |
+|---|---|
+| Speed model (502,158 cells, 19 folds) | **MAE 1.92 km/h** vs city baseline 3.05 (37% lift) |
+| Journey replay (real bus routes) | **MAE 1.22-1.66 min**, 98-100% within 10 min |
+| Planner no-option rate | **0%** — always answers |
+| Shape match rate | **92%** of real trajectory segments |
+| Route match to GTFS | **99.4%** (2,111 of 2,124 GPS routes found in GTFS) |
+| Within 5 km/h | **93.3%** of cells |
+
+## Key findings
+
+1. **`trip_id` in the GPS archive is a runtime label** (`route_HH_MM`), not a GTFS trip_id — stage 03 auto-detects and handles both worlds.
+2. **Depot-creep contamination** (sub-3 km/h parked-bus pairs) was discovered and filtered — morning median speeds corrected from ~18 to ~26 km/h.
+3. **Ping-pair speeds ≠ journey times**: curb-to-curb movement is nearly flat across hours, but journey-level rush penalty accrues through dwell + signal compounding that only stop-passage data captures.
+4. **Day-of-week keying** at 19 days *degrades* MAE (weekend sample starvation); pooled hour-of-day carries the month. The honest harness rejected it.
+
+## Quick start
 
 ```powershell
+# 1. install dependencies
 python -m venv .venv
-.venv\Scripts\python.exe -m pip install -r requirements.txt
-.venv\Scripts\python.exe pipeline\synth_fixture.py
-.venv\Scripts\python.exe pipeline\02_clean_pings.py
-.venv\Scripts\python.exe pipeline\03_project_trips.py
-.venv\Scripts\python.exe pipeline\04_train_model.py
-.venv\Scripts\python.exe -m uvicorn api.app:app --port 8010
-# UI:   http://localhost:8010/web/     city view: /web/pulse.html
-```
+.venv\Scripts\pip install -r requirements.txt
 
-## Real-data flow (W&B/CoreWeave sandboxes or any Linux box)
+# 2. get the data (see pipeline/sandbox_run.py for the sandbox pipeline,
+#    or download the 7z from the hackathon page)
+#    .env needs: GTFS_RT_URL + GTFS_RT_API_KEY (from Transport Stack)
 
-```powershell
-# one real day end-to-end inside a sandbox (downloads 16 GB from R2 itself):
-.venv\Scripts\python.exe pipeline\sandbox_run.py --days 2026_10_13
-# more days (attach reuses the warm sandbox + archive):
-.venv\Scripts\python.exe pipeline\sandbox_run.py --days 2026_10_17 2026_10_18 --attach --skip-download
-# GTFS-free route x hour speed profiles per processed day:
-.venv\Scripts\python.exe pipeline\04f_pings_speeds.py --all
-# network-wide real speed model from all processed days:
-.venv\Scripts\python.exe pipeline\05_ping_model.py
-# validation (edge replay; temporal hold-out via --test-days):
-.venv\Scripts\python.exe validation\holdout.py --n 2000
-```
+# 3. put static GTFS .txt files in data/gtfs/
 
-Per-day outputs land in `data/clean/` (pings parquet ~240 MB/day,
-speeds, stats json). Model tables in `model/`.
+# 4. process a day
+.venv\Scripts\python pipeline\01_extract_day.py --day 2026_10_13
+.venv\Scripts\python pipeline\02_clean_pings.py  --day 2026_10_13
+.venv\Scripts\python pipeline\03_project_trips.py --day 2026_10_13
+.venv\Scripts\python pipeline\04_train_model.py
 
-## Pipeline stages
-
-```
-01_extract_day.py    single-day member from the 7z (py7zr), SQLite indexes
-02_clean_pings.py    DuckDB-over-SQLite direct scan: dedupe, bbox, teleports,
-                     IST hour/dow  +  drop-reason stats json (real: 62% kept)
-03_project_trips.py  pings -> GTFS shapes; dual mode: trips (synth) /
-                     routes (real: trip_id is a runtime label like 1795_19_31);
-                     gap segmentation, best-shape fit, stop passages, edges
-04_train_model.py    edge p10/p50/p90 + headways + fallback hierarchy
-04f_pings_speeds.py  route x hour speeds from ping pairs (no GTFS needed)
-05_ping_model.py     network-wide real speed tables across all days
+# 5. serve
+.venv\Scripts\python -m uvicorn api.app:app --port 8010
+# open http://localhost:8010/web/
 ```
 
 ## API
 
 ```
-GET /health   GET /status            system + live-layer + holdout readout
-GET /stops/search?q=                  fuzzy stop search
-GET /journeys?from=&to=&depart=       options: walk/wait/bus legs, \
-     [&asOf=2026-10-13 | 2026-10-13T09:30:00+05:30]      day / window replay
-GET /geo?hour=9[&day=]                route polylines colored by observed speed
-GET /days  GET /pulse                replay day list; city speed curve
+GET /journeys?from=<lat,lng>&to=<lat,lng>&depart=<ISO8601>
+    → journey options with walk/wait/ride legs + p10/p50/p90 ETA bands
+    [&asOf=2026-10-13]   time-travel replay (whole-day)
+    [&asOf=2026-10-13T09:30:00+05:30]   replay (45-minute window)
+    [&max=6]              max options returned
+
+GET /stops/search?q=<text>     fuzzy real-stop search
+GET /geo?hour=9               route geometries colored by observed speed
+GET /pulse                    real city speed curve
+GET /days                     available replay days
+GET /status                   system + live-layer + holdout readout
+GET /health                   lightweight health
 ```
 
-`asOf` is the time-travel feature: date-only re-plans with that day's
-observed speeds; a full timestamp re-plans using just the prior 45 minutes
-of bus movement — the same blend path the live GTFS-RT feed will use
-(`api/live.py`, starts automatically when `GTFS_RT_URL` is in the env).
+## Edge (Cloudflare Workers + D1)
 
-## Layout
-
-```
-pipeline/   stages 01-05 + synth fixture + sandbox runner + QA scripts
-api/        FastAPI planner (app.py), live layer (live.py)
-web/        single-file MapLibre clients (index.html planner, pulse.html city)
-model/      trained lookup tables (parquet) + holdout reports
-data/       raw + processed (gitignored)
-validation/ holdout harness
-deployment/ vm/sandbox setup, R2 sync, Cloudflare wiring
+```powershell
+# deploy the edge slice (City Pulse + lookups)
+cd workers
+npx wrangler d1 execute delhi-pulse --remote --file ../docs/d1_part1.sql
+npx wrangler deploy
+# live at https://delhi-pulse.prayaas.workers.dev/
 ```
 
-## Real-data notes (see docs/technical-note.md for the full write-up)
+## Project structure
 
-- Day 13 cleaning: 28.7M rows -> 17.8M kept (62.0%), ~26 s after the
-  DuckDB sqlite-scanner rewrite.
-- `trip_id` in the archive is a runtime label (`route_HH_MM`), NOT a GTFS
-  trip id — stage 03 auto-detects and handles both worlds.
-- 2,112+ real routes profiled per day from ping pairs; network-wide real
-  model currently serves /geo, /pulse and replay.
+```
+pipeline/          production pipeline stages (01-05 + synth + runner)
+api/               FastAPI planner + live GTFS-RT layer
+web/               MapLibre clients (planner + City Pulse map)
+workers/           Cloudflare Worker + D1 edge deployment
+validation/        holdout harnesses + OD comparison
+deployment/        VM setup, D1 export, sandbox runner
+dev/               one-off scripts (probes, QA, forensics)
+docs/              technical note, report.json, OD comparison
+data/              raw + processed (gitignored, ~5 GB local)
+model/             trained lookup tables (gitignored parquet)
+```
+
+## Tech stack
+
+Python 3.11 · DuckDB · py7zr · FastAPI · NumPy · httpx · MapLibre GL JS
+Cloudflare Workers + D1 · cwsandbox (CoreWeave/W&B)

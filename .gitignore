@@ -1,4 +1,4 @@
-.venv/
+﻿.venv/
 __pycache__/
 *.pyc
 .env
@@ -10,3 +10,8 @@ model/*.json
 .DS_Store
 
 .wrangler/
+dev/
+
+docs/d1_*.sql
+model/patterns_*.pkl
+
