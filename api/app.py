@@ -12,6 +12,7 @@ from/to formats: "lat,lng" | "stop_name_text" (fuzzy) | "stop:<stop_id>"
 import json
 import math
 import os
+import re
 import sys
 import datetime as dt
 from pathlib import Path
@@ -36,6 +37,11 @@ WALK_ROUTE_FACTOR = 1.30
 DEFAULT_WAIT_S = 300.0          # 5 min flat until headway model lands
 MAX_STOPS_NEAR = 5
 NEAR_KM = 2.5
+CACHE_MAX = 64                  # E4: bound on replay caches (days/windows)
+DAY_RE = re.compile(r"^\d{4}_\d{2}_\d{2}$")
+DEPART_HINT = "use ISO 8601, e.g. 2026-11-17T08:30:00+05:30"
+# D4 parity with workers/worker.js: coordinate queries must look like Delhi
+DELHI_BOX = (27.0, 30.0, 74.5, 79.5)   # lat_lo, lat_hi, lng_lo, lng_hi
 
 app = FastAPI(title="Delhi Pulse", version="0.1.0")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"],
@@ -191,13 +197,39 @@ _wait_real_df = _load_real("wait_headway_real.parquet")
 WAITR = {(str(r.route_id), int(r.hour_ist)): float(r.headway_s)
          for r in _wait_real_df.itertuples()} if len(_wait_real_df) else {}
 
+# ---- B5: observed-gap wait model ----
+# Half the headway assumes perfectly even spacing. The arrival-theorem wait for
+# a renewal process is E[g^2] / (2 E[g]) = mean * (1 + cv^2) / 2, so the gap
+# spread matters as much as the mean. The 04g/export agent is adding
+# `wait_mean_s` + `gap_cv` to wait_headway_real.parquet (and M.wait_gap).
+# Until those columns exist this map is empty and the headway/2 model below is
+# used unchanged.
+# TODO(B5): drop the headway/2 branch once the exporter writes wait_mean_s and
+# gap_cv (per route-hour) — then waits carry the observed dispersion.
+# 04g stores the RAW mean gap (wait_mean_s / gap_mean_s are aliases) and the
+# gap coefficient of variation; the arrival-theorem correction is applied here.
+WAITGAP = {}
+if len(_wait_real_df) and "gap_cv" in _wait_real_df.columns:
+    _mean_col = next((c for c in ("wait_mean_s", "gap_mean_s")
+                      if c in _wait_real_df.columns), None)
+    if _mean_col:
+        WAITGAP = {(str(r.route_id), int(r.hour_ist)):
+                   (min(3600.0, max(0.0, float(getattr(r, _mean_col)))),
+                    min(5.0, max(0.0, float(r.gap_cv))))
+                   for r in _wait_real_df.itertuples()
+                   if pd.notna(getattr(r, _mean_col)) and pd.notna(r.gap_cv)}
+
 
 def wait_minutes(route_id, stop_id, hour=None):
     """Expected wait, clamped [0.75, 15] min.
-    Precedence: real service headways (trip labels) -> synth stop headways
-    (pooled, hour-aware) -> flat default."""
+    Precedence: observed gaps (B5, once exported) -> real service headways
+    (trip labels) -> synth stop headways (pooled, hour-aware) -> flat default."""
     route_id, stop_id = str(route_id), str(stop_id)
     if hour is not None:
+        gp = WAITGAP.get((route_id, int(hour) % 24))
+        if gp:
+            mean_s, cv = gp
+            return min(15.0, max(0.75, mean_s * (1.0 + cv * cv) / 2.0 / 60.0))
         h = WAITR.get((route_id, int(hour) % 24))
         if h:
             return min(15.0, max(0.75, h / 120.0))
@@ -213,33 +245,159 @@ def wait_minutes(route_id, stop_id, hour=None):
 # (old ride_time superseded by the day-aware version above)
 
 
-def leg_seconds(route_id, a, b, dist_m, hour, day=None, win=None, dow=None):
-    """Median traversal seconds for one leg. DOW-aware speed first."""
-    e = E50.get((route_id, a, b, hour))
-    if e and day is None and win is None:
-        return e[0]
-    if win and route_id in win:
-        return dist_m * 3.6 / max(1.0, win[route_id])
+# ---- C7: per-route usual (off-peak) hour ----
+# Mirrors the exporter rule (deployment/export_model_json.py, C7) exactly:
+# candidates are hours 11..17 that have BOTH a speed (route_hour.parquet, with
+# the ping-pair table only as the exporter's whole-table fallback) and an
+# observed headway (a bus actually runs). The "usual" hour is the candidate
+# whose speed is the MEDIAN of the pool — not the fastest — with ties going to
+# the earlier hour. No widening to the night hours the old 6/7/22/23 sampler
+# used.
+def _build_usual_hours():
+    speed_by_route = {}
+    src = RH if RH else RHR          # same table choice as the exporter
+    for (rid, h), sp in src.items():
+        speed_by_route.setdefault(rid, {})[h] = round(float(sp), 2)
+    head_hours = {}
+    if WAITR:                              # real service headways
+        for (rid, _h) in WAITR:
+            head_hours.setdefault(rid, set()).add(_h)
+    else:                                  # synth hourly headways, else any
+        for (rid, _sid, _h) in WAIT50H:
+            head_hours.setdefault(rid, set()).add(_h)
+        if not head_hours and not WAIT50:
+            head_hours = {rid: set(range(24)) for rid in speed_by_route}
+    out = {}
+    for rid, hrs in head_hours.items():
+        sp = speed_by_route.get(rid)
+        if not sp:
+            continue
+        pool = [h for h in hrs if 11 <= h <= 17 and h in sp]
+        if not pool:
+            continue
+        _med = float(np.median([sp[h] for h in pool]))
+        out[rid] = int(min(pool, key=lambda h: (abs(sp[h] - _med), h)))
+    return out
+
+
+USUAL_HOUR = _build_usual_hours()
+
+
+# ---- E4: request input validation ----
+# `day` / `asOf` end up in file paths and cache keys, so only well-formed
+# names that /days actually lists are accepted.
+_KNOWN_DAYS = None
+_KNOWN_DAYS_AT = 0.0
+
+
+def known_days():
+    """Days the archive can serve: traversal/ping-pair speed days plus
+    ping-only replay days. Cached for 60 s; same set /days reports."""
+    global _KNOWN_DAYS, _KNOWN_DAYS_AT
+    now = _time.monotonic()
+    if _KNOWN_DAYS is None or now - _KNOWN_DAYS_AT > 60.0:
+        _KNOWN_DAYS = (
+            {p.stem.replace("traversals_", "")
+             for p in CLEAN.glob("traversals_*.parquet")}
+            | {p.stem.replace("speeds_", "")
+               for p in CLEAN.glob("speeds_*.parquet")}
+            | {p.stem.replace("pings_", "")
+               for p in CLEAN.glob("pings_*.parquet")}
+        )
+        _KNOWN_DAYS_AT = now
+    return _KNOWN_DAYS
+
+
+def _require_day(strday, param="day"):
+    """Reject anything that is not YYYY_MM_DD or not in /days (E4)."""
+    if not DAY_RE.match(strday or ""):
+        raise HTTPException(400, detail=f"{param} must be a YYYY_MM_DD archive "
+                                        f"day (see /days)")
+    if strday not in known_days():
+        raise HTTPException(400, detail=f"{param}: unknown archive day "
+                                        f'"{strday}" (see /days)')
+
+
+def _in_delhi(lat, lng):
+    la_lo, la_hi, ln_lo, ln_hi = DELHI_BOX
+    return la_lo < lat < la_hi and ln_lo < lng < ln_hi
+
+
+def _parse_depart(s):
+    """Structural depart parse — same accepted forms and error text as the
+    Worker (workers/worker.js D1): ISO 8601 with optional offset, a space
+    separator, or a bare date (midnight IST). Garbage -> 400 + hint."""
+    try:
+        return dt.datetime.fromisoformat(s.strip())
+    except ValueError:
+        raise HTTPException(400, detail=(
+            f'depart cannot be parsed: "{s}" (hint: {DEPART_HINT})'))
+
+
+def _cache_put(cache, key, value):
+    """Bounded insert: oldest entry is evicted once the cache hits 64 (E4)."""
+    if key not in cache and len(cache) >= CACHE_MAX:
+        try:
+            cache.pop(next(iter(cache)))
+        except StopIteration:
+            pass
+    cache[key] = value
+
+
+def _speed_chain(route_id, hour, day=None, dow=None):
+    """Historical (route,hour) speed, before any live/window blending."""
     if day is not None:
         drh, dravg = day
-        sp = (drh.get((route_id, hour)) or dravg.get(route_id)
-              or RH.get((route_id, hour)) or RS.get(route_id)
-              or RHR.get((route_id, hour)) or RSR.get(route_id)
-              or CHR.get(hour) or CH.get(hour) or CH_DEFAULT)
-        return dist_m * 3.6 / max(1.0, sp)
+        return (drh.get((route_id, hour)) or dravg.get(route_id)
+                or RH.get((route_id, hour)) or RS.get(route_id)
+                or RHR.get((route_id, hour)) or RSR.get(route_id)
+                or CHR.get(hour) or CH.get(hour) or CH_DEFAULT)
     if dow is not None and USE_DOW:
-        sp = (DRHR.get((route_id, dow, hour))
-              or RH.get((route_id, hour))
-              or RS.get(route_id)
-              or RHR.get((route_id, hour)) or RSR.get(route_id)
-              or CHR.get(hour) or CH.get(hour) or CH_DEFAULT)
-        return dist_m * 3.6 / max(1.0, sp)
+        return (DRHR.get((route_id, dow, hour))
+                or RH.get((route_id, hour)) or RS.get(route_id)
+                or RHR.get((route_id, hour)) or RSR.get(route_id)
+                or CHR.get(hour) or CH.get(hour) or CH_DEFAULT)
     # B2: traversal speeds (dwell-inclusive, along-route) BEFORE the
     # moving-only ping-pair tables
-    sp = (RH.get((route_id, hour)) or RS.get(route_id)
-          or RHR.get((route_id, hour)) or RSR.get(route_id)
-          or CHR.get(hour) or CH.get(hour) or CH_DEFAULT)
-    return dist_m * 3.6 / max(1.0, sp)   # meters at km/h -> seconds
+    return (RH.get((route_id, hour)) or RS.get(route_id)
+            or RHR.get((route_id, hour)) or RSR.get(route_id)
+            or CHR.get(hour) or CH.get(hour) or CH_DEFAULT)
+
+
+def _blend_window(route_id, dist_m, hist_s, win):
+    """B3-lite: weigh an observed window speed against the historical chain.
+
+    The window is a RATIO on the historical timing (0.5..2.0) rather than a
+    replacement, weighted by its pair count: alpha = min(0.8, n/(n+30)). The
+    blend happens in speed space, so a fast 3-pair window can no longer time a
+    whole route on three pings.
+    """
+    if not win or hist_s <= 0:
+        return hist_s
+    obs = win.get(route_id)
+    if not obs:
+        return hist_s
+    wsp, n = obs
+    if not wsp or wsp <= 0 or not n:
+        return hist_s
+    hist_sp = dist_m * 3.6 / hist_s
+    if hist_sp <= 0:
+        return hist_s
+    ratio = min(2.0, max(0.5, float(wsp) / hist_sp))
+    alpha = min(0.8, float(n) / (float(n) + 30.0))
+    return hist_s / (1.0 + alpha * (ratio - 1.0))
+
+
+def leg_seconds(route_id, a, b, dist_m, hour, day=None, win=None, dow=None):
+    """Median traversal seconds for one leg. DOW-aware speed first; a live or
+    replay window is blended in as a clamped, pair-count-weighted ratio."""
+    e = E50.get((route_id, a, b, hour))
+    if e and day is None:
+        hist_s = e[0]
+    else:
+        sp = _speed_chain(route_id, hour, day=day, dow=dow)
+        hist_s = dist_m * 3.6 / max(1.0, sp)   # meters at km/h -> seconds
+    return _blend_window(route_id, dist_m, hist_s, win)
 
 
 _DAY_SPEED_CACHE = {}
@@ -277,14 +435,14 @@ def _day_speeds(day):
             else:
                 df = pd.DataFrame()
                 df2 = pd.DataFrame()
-            _DAY_SPEED_CACHE[day] = (
+            _cache_put(_DAY_SPEED_CACHE, day, (
                 {(str(r.route_id), int(r.hour_ist)): float(r.sp)
                  for r in df.itertuples()},
                 {str(r.route_id): float(r.sp)
                  for r in df2.itertuples()} if len(df2) else {},
-            )
+            ))
         except Exception:
-            _DAY_SPEED_CACHE[day] = ({}, {})
+            _cache_put(_DAY_SPEED_CACHE, day, ({}, {}))
     return _DAY_SPEED_CACHE[day]
 
 
@@ -292,15 +450,16 @@ _WINDOW_CACHE = {}
 
 
 def _window_speeds(day, end_epoch, window_s=2700.0, min_pairs=4):
-    """Per-route implied speeds from ping pairs inside [end-window, end].
-    This is the replay twin of LiveLayer.window_speeds() — same computation,
-    archive slice instead of live store. Cached in 15-min buckets."""
+    """Per-route implied speeds + pair counts from ping pairs inside
+    [end-window, end]. This is the replay twin of
+    LiveLayer.window_speeds() — same computation, archive slice instead of
+    live store. Cached in 15-min buckets (bounded at CACHE_MAX)."""
     key = (day, int(end_epoch // 900), int(window_s))
     if key in _WINDOW_CACHE:
         return _WINDOW_CACHE[key]
     path = CLEAN / f"pings_{day}.parquet"
     if not path.exists():
-        _WINDOW_CACHE[key] = {}
+        _cache_put(_WINDOW_CACHE, key, {})
         return {}
     import duckdb
     con = duckdb.connect()
@@ -324,9 +483,10 @@ def _window_speeds(day, end_epoch, window_s=2700.0, min_pairs=4):
         GROUP BY 1 HAVING COUNT(*) >= {min_pairs}
     """).df()
     con.close()
-    out = {str(r.route_id): float(r.dist_sum / max(1e-9, r.dt_sum) * 3.6)
+    out = {str(r.route_id): (float(r.dist_sum / max(1e-9, r.dt_sum) * 3.6),
+                             int(r.n))
            for r in df.itertuples()}
-    _WINDOW_CACHE[key] = out
+    _cache_put(_WINDOW_CACHE, key, out)
     return out
 
 
@@ -424,7 +584,11 @@ def journeys(fromq: str = Query(..., alias="from"),
              max_options: int = Query(3, alias="max", ge=1, le=8)):
     o = resolve_place(fromq)
     d = resolve_place(toq)
-    dep = dt.datetime.fromisoformat(depart) if depart else dt.datetime.now(IST)
+    # E4/D4: refuse coordinates nowhere near Delhi (same message as the Worker)
+    for p in (o, d):
+        if not _in_delhi(p["lat"], p["lng"]):
+            raise HTTPException(400, detail="coordinates are outside the Delhi region")
+    dep = _parse_depart(depart) if depart else dt.datetime.now(IST)
     if dep.tzinfo is None:
         dep = dep.replace(tzinfo=IST)
     dep = dep.astimezone(IST)
@@ -433,9 +597,17 @@ def journeys(fromq: str = Query(..., alias="from"),
     replay_mode = None
     strday = None
     if asOf:
-        t = dt.datetime.fromisoformat(asOf)
+        try:
+            t = dt.datetime.fromisoformat(asOf.strip())
+        except ValueError:
+            raise HTTPException(400, detail=(
+                f'asOf cannot be parsed: "{asOf}" '
+                '(hint: use YYYY-MM-DD or ISO 8601)'))
         strday = f"{t.year:04d}_{t.month:02d}_{t.day:02d}"
-        day = _day_speeds(strday) if strday else None
+        _require_day(strday, "asOf")
+        if t.tzinfo is None:      # bare local asOf = IST (Worker parity)
+            t = t.replace(tzinfo=IST)
+        day = _day_speeds(strday)
         if t.hour or t.minute or t.second:
             win = _window_speeds(strday, t.timestamp(), window_s=2700)
             replay_mode = f"window@{asOf}"
@@ -444,7 +616,7 @@ def journeys(fromq: str = Query(..., alias="from"),
     elif LIVE_LIVE.status()["url"]:
         wl = LIVE_LIVE.window_speeds(window_s=900)
         if wl:
-            win = {r: sp for r, (sp, n) in wl.items()}
+            win = dict(wl)          # B3-lite: keep (speed, pairs) for blending
             replay_mode = "live"
 
     o_near = nearest_stops(o["lat"], o["lng"]) or \
@@ -540,44 +712,54 @@ def journeys(fromq: str = Query(..., alias="from"),
             geo = op.pop("_geo", None)
             if geo:
                 u = _usual_at_quiet_hour(geo)
-                op["usual_p50_min"] = u["total_min"]
-                op["usual_hour_ist"] = u["hour"]
-                op["rush_effect_min"] = round(
-                    op["total_min"] - u["total_min"], 1)
-                op["usual_wait_min"] = u["wait_min"]
+                if u:
+                    op["usual_p50_min"] = u["total_min"]
+                    op["usual_hour_ist"] = u["hour"]
+                    op["rush_effect_min"] = round(
+                        op["total_min"] - u["total_min"], 1)
+                    op["usual_wait_min"] = u["wait_min"]
             picked.append(op)
             if len(picked) >= max_options:
                 break
         return dict(options=picked, replay_day=strday, replay_mode=replay_mode)
 
     def _usual_at_quiet_hour(geo):
-        """Same journey, evaluated across commuter-quiet hours; the
-        'usual' answer is the best of them (typically the least traffic)."""
-        best = None
-        for hour in (6, 7, 13, 14, 15, 16, 22, 23):
-            quiet_ts = dep.replace(hour=hour, minute=30, second=0).timestamp()
-            if geo[0] == "direct":
-                _, pat, i, j, oa, db_ = geo
-                wait_q = wait_minutes(pat["route_id"], oa["stop_id"], hour=hour)
-                board_q = quiet_ts + oa["walk_min"] * 60 + wait_q * 60
-                ride_q, _, _, _ = ride_time(pat, i, j, board_q)
-                total = (oa["walk_min"] + wait_q + ride_q / 60 + db_["walk_min"])
-                wait_sum = wait_q
-            else:
-                _, A, i, ia, B, tb, j, oa, db_, tstop, wmin = geo
-                wait_a = wait_minutes(A["route_id"], oa["stop_id"], hour=hour)
-                board_q = quiet_ts + oa["walk_min"] * 60 + wait_a * 60
-                rideA, t_tr, _, _ = ride_time(A, i, ia, board_q)
-                wait_b = wait_minutes(B["route_id"], tstop, hour=hour)
-                xfer_s = TRANSFER_BUFFER_S + wmin * 60 + wait_b * 60
-                rideB, _, _, _ = ride_time(B, tb, j, t_tr + xfer_s)
-                total = (oa["walk_min"] + wait_a + rideA / 60 + xfer_s / 60
-                         + rideB / 60 + db_["walk_min"])
-                wait_sum = wait_a + wait_b
-            if best is None or total < best["total"]:
-                best = dict(total=total, hour=hour, wait_sum=wait_sum)
-        return dict(total_min=round(best["total"], 1), hour=best["hour"],
-                    wait_min=round(best["wait_sum"], 1))
+        """C7: the same journey timed at each route's off-peak MEDIAN hour
+        (11:00-17:00, present in both the speed layer and the observed
+        headways — the exporter's rule, no night-hour widening). Returns None
+        when a leg's route has no qualifying hour."""
+        if geo[0] == "direct":
+            _, pat, i, j, oa, db_ = geo
+            uh = USUAL_HOUR.get(str(pat["route_id"]))
+            if uh is None:
+                return None
+            quiet_ts = dep.replace(hour=uh, minute=30, second=0,
+                                   microsecond=0).timestamp()
+            wait_q = wait_minutes(pat["route_id"], oa["stop_id"], hour=uh)
+            board_q = quiet_ts + oa["walk_min"] * 60 + wait_q * 60
+            ride_q, _, _, _ = ride_time(pat, i, j, board_q)
+            total = (oa["walk_min"] + wait_q + ride_q / 60 + db_["walk_min"])
+            return dict(total_min=round(total, 1), hour=uh,
+                        wait_min=round(wait_q, 1))
+        _, A, i, ia, B, tb, j, oa, db_, tstop, wmin = geo
+        uhA = USUAL_HOUR.get(str(A["route_id"]))
+        uhB = USUAL_HOUR.get(str(B["route_id"]))
+        if uhA is None or uhB is None:
+            return None
+        ts_a = dep.replace(hour=uhA, minute=30, second=0,
+                           microsecond=0).timestamp()
+        wait_a = wait_minutes(A["route_id"], oa["stop_id"], hour=uhA)
+        board_q = ts_a + oa["walk_min"] * 60 + wait_a * 60
+        rideA, _, _, _ = ride_time(A, i, ia, board_q)
+        wait_b = wait_minutes(B["route_id"], tstop, hour=uhB)
+        xfer_s = TRANSFER_BUFFER_S + wmin * 60 + wait_b * 60
+        ts_b = dep.replace(hour=uhB, minute=30, second=0,
+                           microsecond=0).timestamp()
+        rideB, _, _, _ = ride_time(B, tb, j, ts_b + xfer_s)
+        total = (oa["walk_min"] + wait_a + rideA / 60 + xfer_s / 60
+                 + rideB / 60 + db_["walk_min"])
+        return dict(total_min=round(total, 1), hour=min(uhA, uhB),
+                    wait_min=round(wait_a + xfer_s / 60, 1))
 
     def _emit_transfer(A, B, i, ia, tb, j, oa, tstop, wmin, db_, via=None):
         if len(options) >= MAX_OPTIONS:
@@ -704,6 +886,8 @@ def _ramp(kmh, vmax=36.0):
 @app.get("/geo")
 def geo(hour: int = 9, day: str | None = None, limit: int = 800,
         stride: int = 3):
+    if day:
+        _require_day(day, "day")     # E4: no arbitrary day -> file path
     drh, dravg = _day_speeds(day) if day else ({}, {})
     feats = []
     # order routes by ping-pair coverage so the visible set is the busiest
@@ -733,11 +917,8 @@ def geo(hour: int = 9, day: str | None = None, limit: int = 800,
 
 @app.get("/days")
 def days():
-    t = {p.stem.replace("traversals_", "")
-         for p in CLEAN.glob("traversals_*.parquet")}
-    s = {p.stem.replace("speeds_", "")
-         for p in CLEAN.glob("speeds_*.parquet")}
-    return {"days": sorted(t | s)}
+    # the same set _require_day() enforces (speeds days + ping-only replay days)
+    return {"days": sorted(known_days())}
 
 
 @app.get("/status")
