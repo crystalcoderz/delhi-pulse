@@ -16,7 +16,8 @@ set -euo pipefail
 cd /opt/delhi-pulse
 export DP_ARCHIVE=/opt/archive/delhi-dtc-bus-gtfs-rt-2026-10.7z
 export DEBIAN_FRONTEND=noninteractive
-LOG() { echo "[$(date -u +%H:%M:%S)] $*"; }
+LOG() { echo "[$(date -u '+%H:%M:%S')] $*"; }
+echo $$ > /opt/bootstrap.pid
 
 mkdir -p data/raw data/clean model workers/public docs
 
@@ -63,6 +64,12 @@ set -e
 d=$1
 cd /opt/delhi-pulse
 [ -s "data/clean/pings_$d.parquet" ] && exit 0
+# any day still missing pings gets a forced clean re-extract: stale raw DBs
+# left by interrupted runs can be truncated SQLite (valid header, malformed
+# body -> "database disk image is malformed" during indexing) and must never
+# be reused
+rm -f "data/raw/bus_movements_$d.db" "data/raw/bus_movements_$d.db-shm" \
+      "data/raw/bus_movements_$d.db-wal"
 /opt/venv/bin/python pipeline/01_extract_day.py --day "$d"
 /opt/venv/bin/python pipeline/02_clean_pings.py --day "$d"
 rm -f "data/raw/bus_movements_$d.db" "data/raw/bus_movements_$d.db-shm" \
@@ -70,8 +77,23 @@ rm -f "data/raw/bus_movements_$d.db" "data/raw/bus_movements_$d.db-shm" \
 echo "cleaned: $d"
 EOF
 chmod +x /opt/extract_one.sh
+# garbage-collect raw DBs of days already cleaned during interrupted runs
+for f in data/raw/bus_movements_*.db; do
+  d=$(basename "$f" .db | sed 's/bus_movements_//')
+  if [ -s "data/clean/pings_$d.parquet" ]; then
+    rm -f "$f" "$f-shm" "$f-wal" && LOG "gc: raw $d (pings already clean)"
+  fi
+done
+XARGS_KO=0
 for i in $(seq -w 1 31); do echo "2026_10_$i"; done \
-  | xargs -P 12 -I{} /opt/extract_one.sh {}
+  | xargs -P 8 -I{} /opt/extract_one.sh {} \
+  || { XARGS_KO=1; LOG "pass-1 workers failed; retrying missing serially"; }
+# retry pass, serial and gentle
+for i in $(seq -w 1 31); do
+  d="2026_10_$i"
+  [ -s "data/clean/pings_$d.parquet" ] || /opt/extract_one.sh "$d" \
+      || LOG "STILL FAILED after retry: $d"
+done
 N=$(ls data/clean/pings_2026_10_*.parquet 2>/dev/null | wc -l)
 LOG "clean pings ready: $N/31"
 [ "$N" -ge 31 ] || { LOG "EXTRACT INCOMPLETE ($N/31) — aborting refresh"; exit 1; }
