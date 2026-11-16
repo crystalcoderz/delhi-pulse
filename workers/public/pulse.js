@@ -1,7 +1,7 @@
 (() => {
   'use strict';
 
-  const { API, COLORS, REDUCED_MOTION, h, getJSON, createMap, labelLayerId } = window.DelhiPulse;
+  const { API, COLORS, REDUCED_MOTION, h, getJSON, createMap, ramp, colorRamp } = window.DelhiPulse;
   const $ = id => document.getElementById(id);
 
   const hourInput = $('hour');
@@ -10,19 +10,39 @@
   const MAX_HOUR = Number(hourInput.max);
   const PLAY_INTERVAL_MS = 1100;
   const MAX_CACHED_HOURS = 8;
-  const SPEED = ['coalesce', ['to-number', ['get', 'speed_kmh']], 20];
+  const SPEED_COLORS = [[8, COLORS.red], [20, COLORS.amberDeep], [32, COLORS.green]];
 
   let cityCurve = null;
   let refreshSeq = 0;
   let playing = false;
   let playTimer = null;
   let popup = null;
+  let map = null;
+  let mapFailed = false;
 
-  const map = createMap('map', { center: [77.21, 28.62], zoom: 10 });
-  window.map = map;
   const mapReady = new Promise(resolve => {
-    if (map) map.on('load', resolve);
+    createMap('map', { center: [77.21, 28.62], zoom: 10 }).then(ready => {
+      if (!ready) {
+        mapFailed = true;
+        return;
+      }
+      map = ready;
+      window.map = map;
+      resolve(map);
+    });
   });
+
+  const speedOf = feature => {
+    const n = Number(feature.getProperty('speed_kmh'));
+    return Number.isFinite(n) ? n : 20;
+  };
+
+  // Width repeats the speed encoding, so the map does not rely on color alone.
+  function lineWidth(speed, zoom) {
+    const far = ramp(speed, [[8, 2.6], [20, 1.4], [32, 0.8]]);
+    const near = ramp(speed, [[8, 7], [20, 4.5], [32, 3]]);
+    return ramp(zoom, [[9, far], [13, near]]);
+  }
 
   const hourLabel = hour => String(hour).padStart(2, '0') + ':00';
   const nextHour = hour => (hour >= MAX_HOUR ? MIN_HOUR : hour + 1);
@@ -32,39 +52,32 @@
   }
 
   // ---------- map layer ----------
+  // No speed-based draw order: where routes share a road, putting the slowest on top
+  // would paint the whole corridor with its single worst reading.
   mapReady.then(() => {
-    map.addSource('pulse', { type: 'geojson', data: { type: 'FeatureCollection', features: [] } });
-    map.addLayer({
-      id: 'pulse', type: 'line', source: 'pulse',
-      // No speed-based draw order: where routes share a road, putting the slowest on top
-      // would paint the whole corridor with its single worst reading.
-      layout: { 'line-cap': 'round', 'line-join': 'round' },
-      paint: {
-        'line-color': ['interpolate', ['linear'], SPEED, 8, COLORS.red, 20, COLORS.amberDeep, 32, COLORS.green],
-        // Width repeats the speed encoding, so the map does not rely on color alone.
-        'line-width': ['interpolate', ['linear'], ['zoom'],
-          9, ['interpolate', ['linear'], SPEED, 8, 2.6, 20, 1.4, 32, 0.8],
-          13, ['interpolate', ['linear'], SPEED, 8, 7, 20, 4.5, 32, 3]],
-        'line-opacity': ['case', ['==', ['get', 'source'], 'route-avg'], 0.3, 0.8],
-      },
-    }, labelLayerId(map));
+    const styleFeature = feature => {
+      const speed = speedOf(feature);
+      return {
+        strokeColor: colorRamp(speed, SPEED_COLORS),
+        strokeWeight: lineWidth(speed, map.getZoom()),
+        strokeOpacity: feature.getProperty('source') === 'route-avg' ? 0.3 : 0.8,
+      };
+    };
+    map.data.setStyle(styleFeature);
+    map.addListener('zoom_changed', () => map.data.setStyle(styleFeature));
 
-    map.on('click', 'pulse', e => {
-      const feature = e.features && e.features[0];
-      if (!feature) return;
-      const props = feature.properties || {};
-      const speed = Number(props.speed_kmh);
-      if (popup) popup.remove();
-      popup = new maplibregl.Popup({ maxWidth: '260px' })
-        .setLngLat(e.lngLat)
-        .setDOMContent(h('div', { class: 'route-pop' },
-          h('span', { class: 'plate', text: props.name || props.route || 'Route' }),
-          Number.isFinite(speed) && h('p', { text: `${speed.toFixed(1)} km/h at ${hourLabel(Number(hourInput.value))}` }),
-          props.source === 'route-avg' && h('p', { class: 'hint', text: 'All-day average. No buses were recorded on this route at this hour.' })))
-        .addTo(map);
+    popup = new google.maps.InfoWindow({ maxWidth: 260 });
+    map.data.addListener('click', e => {
+      const feature = e.feature;
+      const speed = Number(feature.getProperty('speed_kmh'));
+      const source = feature.getProperty('source');
+      popup.setContent(h('div', { class: 'route-pop' },
+        h('span', { class: 'plate', text: feature.getProperty('name') || feature.getProperty('route') || 'Route' }),
+        Number.isFinite(speed) && h('p', { text: `${speed.toFixed(1)} km/h at ${hourLabel(Number(hourInput.value))}` }),
+        source === 'route-avg' && h('p', { class: 'hint', text: 'All-day average. No buses were recorded on this route at this hour.' })));
+      popup.setPosition(e.latLng);
+      popup.open({ map });
     });
-    map.on('mouseenter', 'pulse', () => { map.getCanvas().style.cursor = 'pointer'; });
-    map.on('mouseleave', 'pulse', () => { map.getCanvas().style.cursor = ''; });
   });
 
   // ---------- data ----------
@@ -164,12 +177,15 @@
     clearTimeout(slow);
     if (seq !== refreshSeq) return;
     if (!fc) return setStatus('Route speeds could not be loaded for this hour. The previous hour is still shown.');
-    if (!map) return setStatus(summary(fc, hour));
+    if (mapFailed) return setStatus(summary(fc, hour));
 
     await mapReady;
     if (seq !== refreshSeq) return;
-    if (popup) popup.remove();
-    map.getSource('pulse').setData(fc);
+    popup.close();
+    const previous = [];
+    map.data.forEach(feature => previous.push(feature));
+    map.data.addGeoJson(fc);
+    for (const feature of previous) map.data.remove(feature);
     setStatus(summary(fc, hour));
   }
 

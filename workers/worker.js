@@ -133,8 +133,20 @@ export default {
       // ---- Google Maps Platform proxies (no model load needed) ----
       // Key = env.GOOGLE_MAPS_KEY (Cloudflare secret). Never sent to clients.
       const GKEY = env.GOOGLE_MAPS_KEY || null;
+      // The Referer lets the key carry an HTTP-referrer restriction that also
+      // covers these server-side calls.
       const gHead = (extra) => ({ "content-type": "application/json",
-                                  "x-goog-api-key": GKEY, ...extra });
+                                  "x-goog-api-key": GKEY,
+                                  referer: "https://delhi-pulse.prayaas.workers.dev/",
+                                  ...extra });
+
+      // Browser config for the Maps JavaScript API basemap.
+      if (p === "/api/maps-config" || p === "/maps-config") {
+        if (!GKEY) return j({ key: null, note: "maps not configured" }, 503);
+        return new Response(JSON.stringify({
+          key: GKEY, mapId: env.GOOGLE_MAPS_MAP_ID || "DEMO_MAP_ID" }), {
+          headers: { ...JSONH, ...CORS, "cache-control": "public, max-age=300" } });
+      }
       // Delhi NCR bounding box used to scope every Places lookup
       const DELHI_BOX = { rectangle: {
         low: { latitude: 28.15, longitude: 76.60 },

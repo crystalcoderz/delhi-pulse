@@ -27,7 +27,7 @@ Stage 05    Network-wide aggregate speed model
 
 api/app.py     FastAPI journey planner
 api/live.py    GTFS-RT live layer (rolling window + blend)
-web/           MapLibre clients (planner + City Pulse map)
+web/           map clients (planner + City Pulse map)
 workers/       Cloudflare Worker + D1 edge deployment
 deployment/    VM setup, D1 export, sandbox runner
 validation/    Holdout harnesses + OD comparison table
@@ -130,7 +130,7 @@ reachable from a Vercel preview after `npx wrangler deploy`.
 ```
 pipeline/          production pipeline stages (01-05 + synth + runner)
 api/               FastAPI planner + live GTFS-RT layer
-web/               MapLibre clients (planner + City Pulse map)
+web/               map clients (planner + City Pulse map)
 workers/           Cloudflare Worker + D1 edge deployment
 validation/        holdout harnesses + OD comparison
 deployment/        VM setup, D1 export, sandbox runner
@@ -142,5 +142,5 @@ model/             trained lookup tables (gitignored parquet)
 
 ## Tech stack
 
-Python 3.11 · DuckDB · py7zr · FastAPI · NumPy · httpx · MapLibre GL JS
+Python 3.11 · DuckDB · py7zr · FastAPI · NumPy · httpx · Google Maps JavaScript API
 Cloudflare Workers + D1 · cwsandbox (CoreWeave/W&B)

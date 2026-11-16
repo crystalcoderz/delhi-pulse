@@ -1,7 +1,7 @@
 (() => {
   'use strict';
 
-  const { API, COLORS, REDUCED_MOTION, h, getJSON, createMap, labelLayerId } = window.DelhiPulse;
+  const { API, COLORS, h, getJSON, createMap } = window.DelhiPulse;
   const $ = id => document.getElementById(id);
   const enc = encodeURIComponent;
 
@@ -21,10 +21,15 @@
   let planSeq = 0;
   let shownJourney = null;
 
-  const map = createMap('map', { center: [77.21, 28.62], zoom: 10.5 });
-  window.map = map;
+  let map = null;
+  // Resolves only once a working map exists, so map work queued on it never runs against null.
   const mapReady = new Promise(resolve => {
-    if (map) map.on('load', resolve);
+    createMap('map', { center: [77.21, 28.62], zoom: 10.5 }).then(ready => {
+      if (!ready) return;
+      map = ready;
+      window.map = map;
+      resolve(map);
+    });
   });
 
   // ---------- small helpers ----------
@@ -85,51 +90,65 @@
   }
 
   // ---------- map: journey layers ----------
+  // Journey shapes are plain overlays: walk dots, a casing under the bus line, and stop circles.
+  let overlays = [];
+  const MINOR_STOP_ZOOM = 12;
+
+  const toLatLng = ([lng, lat]) => ({ lat, lng });
+
+  function clearOverlays() {
+    for (const overlay of overlays) overlay.setMap(null);
+    overlays = [];
+  }
+
+  function addPolyline(path, options) {
+    const line = new google.maps.Polyline({ map, path: path.map(toLatLng), clickable: false, ...options });
+    overlays.push(line);
+  }
+
+  function addStop(pt, kind) {
+    const major = kind !== 'stop';
+    const marker = new google.maps.Marker({
+      map,
+      position: toLatLng(pt),
+      clickable: false,
+      zIndex: major ? 3 : 2,
+      visible: major || map.getZoom() >= MINOR_STOP_ZOOM,
+      icon: {
+        path: google.maps.SymbolPath.CIRCLE,
+        scale: major ? 6 : 3,
+        fillColor: kind === 'transfer' ? COLORS.amber : COLORS.white,
+        fillOpacity: 1,
+        strokeColor: major ? COLORS.ink : COLORS.green,
+        strokeWeight: major ? 2.5 : 1.5,
+      },
+    });
+    marker.major = major;
+    overlays.push(marker);
+  }
+
   mapReady.then(() => {
-    const before = labelLayerId(map);
-    const empty = { type: 'FeatureCollection', features: [] };
-    const round = { 'line-cap': 'round', 'line-join': 'round' };
-    for (const id of ['journey-walk', 'journey-bus', 'journey-stops']) {
-      map.addSource(id, { type: 'geojson', data: empty });
-    }
-    map.addLayer({
-      id: 'journey-walk', type: 'line', source: 'journey-walk', layout: round,
-      paint: { 'line-color': COLORS.ink, 'line-width': 4, 'line-dasharray': [0.1, 2] },
-    }, before);
-    map.addLayer({
-      id: 'journey-bus-casing', type: 'line', source: 'journey-bus', layout: round,
-      paint: { 'line-color': COLORS.white, 'line-width': 9 },
-    }, before);
-    map.addLayer({
-      id: 'journey-bus', type: 'line', source: 'journey-bus', layout: round,
-      paint: { 'line-color': COLORS.green, 'line-width': 5 },
-    }, before);
-    map.addLayer({
-      id: 'journey-stops-minor', type: 'circle', source: 'journey-stops', minzoom: 12,
-      filter: ['==', ['get', 'kind'], 'stop'],
-      paint: {
-        'circle-radius': 3, 'circle-color': COLORS.white,
-        'circle-stroke-color': COLORS.green, 'circle-stroke-width': 1.5,
-      },
-    }, before);
-    map.addLayer({
-      id: 'journey-stops-major', type: 'circle', source: 'journey-stops',
-      filter: ['!=', ['get', 'kind'], 'stop'],
-      paint: {
-        'circle-radius': 6,
-        'circle-color': ['match', ['get', 'kind'], 'transfer', COLORS.amber, COLORS.white],
-        'circle-stroke-color': COLORS.ink, 'circle-stroke-width': 2.5,
-      },
-    }, before);
+    map.addListener('zoom_changed', () => {
+      const showMinor = map.getZoom() >= MINOR_STOP_ZOOM;
+      for (const overlay of overlays) {
+        if (overlay.major === false) overlay.setVisible(showMinor);
+      }
+    });
   });
 
-  const collection = features => ({ type: 'FeatureCollection', features });
-  const lineFeature = coordinates => ({ type: 'Feature', properties: {}, geometry: { type: 'LineString', coordinates } });
-  const pointFeature = (coordinates, kind) => ({ type: 'Feature', properties: { kind }, geometry: { type: 'Point', coordinates } });
+  function fitTo(extent) {
+    const bounds = new google.maps.LatLngBounds();
+    for (const pt of extent) bounds.extend(toLatLng(pt));
+    const box = map.getDiv();
+    const padding = Math.max(24, Math.min(64, Math.round(Math.min(box.clientWidth, box.clientHeight) / 6)));
+    google.maps.event.addListenerOnce(map, 'idle', () => {
+      if (map.getZoom() > 15) map.setZoom(15);
+    });
+    map.fitBounds(bounds, padding);
+  }
 
   function draw(journey) {
     shownJourney = journey;
-    if (!map) return;
     mapReady.then(() => {
       if (shownJourney !== journey) return;
       const walk = [], bus = [], stops = [], extent = [];
@@ -145,31 +164,35 @@
         if (pts.length < 2) continue;
         extent.push(...pts);
         if (leg.type !== 'bus') {
-          walk.push(lineFeature(pts));
+          walk.push(pts);
           continue;
         }
-        bus.push(lineFeature(pts));
+        bus.push(pts);
         const n = busLegs.indexOf(leg);
         pts.forEach((pt, i) => {
           let kind = 'stop';
           if (i === 0) kind = n === 0 ? 'board' : 'transfer';
           else if (i === pts.length - 1) kind = n === busLegs.length - 1 ? 'alight' : 'transfer';
-          stops.push(pointFeature(pt, kind));
+          stops.push([pt, kind]);
         });
       }
 
-      map.getSource('journey-walk').setData(collection(walk));
-      map.getSource('journey-bus').setData(collection(bus));
-      map.getSource('journey-stops').setData(collection(stops));
+      clearOverlays();
+      const dot = {
+        path: google.maps.SymbolPath.CIRCLE, scale: 2,
+        fillColor: COLORS.ink, fillOpacity: 1, strokeOpacity: 0,
+      };
+      for (const path of walk) {
+        addPolyline(path, { strokeOpacity: 0, zIndex: 1, icons: [{ icon: dot, offset: '0', repeat: '9px' }] });
+      }
+      for (const path of bus) addPolyline(path, { strokeColor: COLORS.white, strokeWeight: 9, strokeOpacity: 1, zIndex: 1 });
+      for (const path of bus) addPolyline(path, { strokeColor: COLORS.green, strokeWeight: 5, strokeOpacity: 1, zIndex: 2 });
+      for (const [pt, kind] of stops) addStop(pt, kind);
 
       if (!journey) return;
       for (const end of ENDS) if (picks[end]) extent.push(picks[end].coord);
       if (extent.length < 2) return;
-      map.resize();
-      const bounds = extent.reduce((b, c) => b.extend(c), new maplibregl.LngLatBounds(extent[0], extent[0]));
-      const box = map.getContainer();
-      const padding = Math.max(24, Math.min(64, Math.round(Math.min(box.clientWidth, box.clientHeight) / 6)));
-      map.fitBounds(bounds, { padding, maxZoom: 15, duration: REDUCED_MOTION ? 0 : 600 });
+      fitTo(extent);
     });
   }
 
@@ -178,22 +201,29 @@
   const isEmpty = end => !picks[end] && !$(end).value.trim();
 
   function placeMarker(end) {
-    if (!map) return;
-    const pick = picks[end];
-    if (!pick) {
-      if (markers[end]) markers[end].remove();
-      return;
-    }
-    if (!markers[end]) {
-      const pin = h('div', { class: 'pin pin-' + end, text: end === 'from' ? 'A' : 'B' });
-      const marker = new maplibregl.Marker({ element: pin, draggable: true });
-      marker.on('dragend', () => {
-        const p = marker.getLngLat();
-        setPoint(end, coordLabel(p.lng, p.lat), [p.lng, p.lat], null, { nearby: true });
-      });
-      markers[end] = marker;
-    }
-    markers[end].setLngLat(pick.coord).addTo(map);
+    mapReady.then(() => {
+      const pick = picks[end];
+      if (!pick) {
+        if (markers[end]) markers[end].map = null;
+        return;
+      }
+      if (!markers[end]) {
+        const pin = h('div', { class: 'pin pin-' + end, text: end === 'from' ? 'A' : 'B' });
+        const marker = new google.maps.marker.AdvancedMarkerElement({
+          content: pin,
+          gmpDraggable: true,
+          zIndex: 10,
+          title: end === 'from' ? 'Start (A). Drag to move.' : 'Destination (B). Drag to move.',
+        });
+        marker.addListener('dragend', () => {
+          const p = new google.maps.LatLng(marker.position);
+          setPoint(end, coordLabel(p.lng(), p.lat()), [p.lng(), p.lat()], null, { nearby: true });
+        });
+        markers[end] = marker;
+      }
+      markers[end].position = toLatLng(pick.coord);
+      markers[end].map = map;
+    });
   }
 
   function updateHint() {
@@ -238,19 +268,21 @@
     if (opts.nearby) nameFromNearestStop(end, pick);
     if (picks.from && picks.to) plan();
     else if (map && opts.pan) {
-      map.easeTo({ center: coord, zoom: Math.max(map.getZoom(), 13), duration: REDUCED_MOTION ? 0 : 500 });
+      if (map.getZoom() < 13) map.setZoom(13);
+      map.panTo(toLatLng(coord));
     }
   }
 
-  if (map) {
-    map.on('click', e => {
-      const target = e.originalEvent && e.originalEvent.target;
-      if (target && target.closest && target.closest('.pin')) return;
+  mapReady.then(() => {
+    updateHint();
+    map.addListener('click', e => {
+      if (!e.latLng) return;
       const end = isEmpty('from') ? 'from' : isEmpty('to') ? 'to' : null;
       if (!end) return;
-      setPoint(end, coordLabel(e.lngLat.lng, e.lngLat.lat), [e.lngLat.lng, e.lngLat.lat], null, { nearby: true });
+      const lng = e.latLng.lng(), lat = e.latLng.lat();
+      setPoint(end, coordLabel(lng, lat), [lng, lat], null, { nearby: true });
     });
-  }
+  });
 
   // ---------- search: DTC stops + Google Places via the edge proxy ----------
   function openList(combo) {
