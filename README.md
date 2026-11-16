@@ -85,13 +85,15 @@ python -m uvicorn api.app:app --port 8010
 > **Skip the 15 GB pipeline:** `make model` downloads the trained
 > `model/*.parquet` tables and `model/*.json` meta from the
 > [HF dataset](https://huggingface.co/datasets/PRAYAASOG/delhi-pulse-model)
-> straight into `model/`, which is enough for `make serve` and the edge
-> export. `make model-train` rebuilds them locally over every processed day.
+> straight into `model/`. With the static GTFS `.txt` files from step 3 that is
+> enough for `make serve` and for the edge export — no archive, no per-day
+> stages. `make model-train` rebuilds the tables locally over every processed day.
 
-`make fetch-archive` / `make train` / `make train-month` / `make serve` /
-`make deploy` are thin wrappers over the commands above; `make` is optional
-and every step can be run by hand exactly as shown (a manual archive download
-just has to land in `data/` — use the `DATA_URL` from `pipeline/common.py`).
+`make` is optional: every target in the `Makefile` (`setup`, `fetch-archive`,
+`model`, `model-train`, `train`, `train-month`, `serve`, `deploy`, `check`) is
+a thin wrapper over the `python -m` commands above, and each step can be run by
+hand exactly as shown (a manual archive download just has to land in `data/` —
+use the `DATA_URL` from `pipeline/common.py`).
 
 ## API
 
@@ -128,19 +130,20 @@ reaches the browser.
 
 ```bash
 # 0. regenerate the D1 SQL from model/ (gitignored build output; the exporter
-#    writes docs/d1_export.sql and splits it into docs/d1_part1..3.sql):
+#    writes docs/d1_export.sql and splits it into docs/d1_partN.sql itself):
 python deployment/export_d1.py
 
 # deploy the edge slice (City Pulse + lookups)
-# D1 import is THREE ordered parts -- each is small enough to import alone,
-# and importing only part1 leaves the edge model incomplete.
+# D1 import is THREE ordered parts today -- each imports cleanly on its own,
+# and importing only part1 leaves the edge model incomplete. If the exporter
+# prints more parts, import those too.
 cd workers
 npx wrangler d1 execute delhi-pulse --remote --file ../docs/d1_part1.sql
 npx wrangler d1 execute delhi-pulse --remote --file ../docs/d1_part2.sql
 npx wrangler d1 execute delhi-pulse --remote --file ../docs/d1_part3.sql
 npx wrangler deploy
 # live at https://delhi-pulse.prayaas.workers.dev/
-# (`make deploy` runs the three imports + deploy from the repo root)
+# (`make deploy` runs the export, the three imports and deploy from the repo root)
 ```
 
 ### Vercel (UI previews)
