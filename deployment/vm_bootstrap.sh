@@ -64,6 +64,12 @@ set -e
 d=$1
 cd /opt/delhi-pulse
 [ -s "data/clean/pings_$d.parquet" ] && exit 0
+# any day still missing pings gets a forced clean re-extract: stale raw DBs
+# left by interrupted runs can be truncated SQLite (valid header, malformed
+# body -> "database disk image is malformed" during indexing) and must never
+# be reused
+rm -f "data/raw/bus_movements_$d.db" "data/raw/bus_movements_$d.db-shm" \
+      "data/raw/bus_movements_$d.db-wal"
 /opt/venv/bin/python pipeline/01_extract_day.py --day "$d"
 /opt/venv/bin/python pipeline/02_clean_pings.py --day "$d"
 rm -f "data/raw/bus_movements_$d.db" "data/raw/bus_movements_$d.db-shm" \
