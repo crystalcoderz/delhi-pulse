@@ -62,7 +62,7 @@ echo "cleaned: $d"
 EOF
 chmod +x /opt/extract_one.sh
 for i in $(seq -w 1 31); do echo "2026_10_$i"; done \
-  | xargs -P 8 -I{} /opt/extract_one.sh {}
+  | xargs -P 12 -I{} /opt/extract_one.sh {}
 N=$(ls data/clean/pings_2026_10_*.parquet 2>/dev/null | wc -l)
 LOG "clean pings ready: $N/31"
 [ "$N" -ge 31 ] || { LOG "EXTRACT INCOMPLETE ($N/31) — aborting refresh"; exit 1; }
