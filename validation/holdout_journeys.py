@@ -214,7 +214,7 @@ def run():
     con.close()
 
     df = scored.merge(journeys[["route_id", "trip_id", "d_ist", "seg",
-                                "ride_s", "dist_m"]],
+                                "ride_s", "h0", "dist_m"]],
                      on=["route_id", "trip_id", "d_ist", "seg"])
     df["err_min"] = (df.pred_s - df.ride_s) / 60.0
     df["abs_min"] = df.err_min.abs()
