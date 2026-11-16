@@ -313,19 +313,36 @@ export default {
         const depEpoch = departT ? new Date(departT).getTime() / 1000 : Date.now() / 1000;
         const hour0 = Math.floor((depEpoch + 19800) / 3600 % 24);
 
-        // find nearby stops for o and d (inlined)
-        const oNear = Object.keys(M.stops)
-          .map(sid => { const s = M.stops[sid];
-            return { sid, d: haversineM(origin.lat, origin.lng, s[0], s[1]),
-                     name: s[2], lat: s[0], lng: s[1] }; })
-          .sort((a,b) => a.d - b.d).slice(0, 4)
-          .filter(x => x.d <= 2500);
-        const dNear = Object.keys(M.stops)
-          .map(sid => { const s = M.stops[sid];
-            return { sid, d: haversineM(dest.lat, dest.lng, s[0], s[1]),
-                     name: s[2], lat: s[0], lng: s[1] }; })
-          .sort((a,b) => a.d - b.d).slice(0, 4)
-          .filter(x => x.d <= 2500);
+        // Always include nearby stops, plus the exact stop if stop: given
+        let oNear, dNear;
+        const mkNearby = (lat, lng, k=5, limit=2500) =>
+          Object.keys(M.stops)
+            .map(sid => { const s = M.stops[sid];
+              return { sid, d: haversineM(lat, lng, s[0], s[1]),
+                       name: s[2], lat: s[0], lng: s[1] }; })
+            .filter(x => (M.membership[x.sid] || []).length > 0)
+            .sort((a,b) => a.d - b.d).slice(0, k)
+            .filter(x => x.d <= limit);
+
+        oNear = mkNearby(origin.lat, origin.lng, 12)          .filter(x => (M.membership[x.sid] || []).length > 0);
+        if (origin.stop_id && M.stops[origin.stop_id]) {
+          const s = M.stops[origin.stop_id];
+          const exact = { sid: origin.stop_id, name: s[2],
+                          lat: s[0], lng: s[1], d: 0, walk_min: 0 };
+          oNear = [exact, ...oNear.filter(n => n.sid !== origin.stop_id)];
+        }
+        dNear = mkNearby(dest.lat, dest.lng, 12)
+          .filter(x => (M.membership[x.sid] || []).length > 0);
+        if (dest.stop_id && M.stops[dest.stop_id]) {
+          const s = M.stops[dest.stop_id];
+          const exact = { sid: dest.stop_id, name: s[2],
+                          lat: s[0], lng: s[1], d: 0, walk_min: 0 };
+          dNear = [exact, ...dNear.filter(n => n.sid !== dest.stop_id)];
+        }
+        oNear = oNear.map(x => x.walk_min !== undefined ? x :
+          {...x, walk_min: Math.round(x.d * 1.3 / 80 * 10) / 10});
+        dNear = dNear.map(x => x.walk_min !== undefined ? x :
+          {...x, walk_min: Math.round(x.d * 1.3 / 80 * 10) / 10});
 
         if (!oNear.length || !dNear.length) {
           return j({ options: [], note: "no bus stops within walking distance" });
@@ -435,7 +452,20 @@ export default {
         });
       }
 
-      // ---- root ----
+      // ---- /status (for the planner UI) ----
+      if (p === "/status" || p === "/api/status") {
+        const M2 = await getModel(env);
+        return j({
+          ok: true,
+          routes: Object.keys(M2.route_avg).length,
+          patterns: M2.patterns.length,
+          edges: 0,
+          live: { vehicles: 0, url: false, n_fetch: 0 },
+          note: "edge deployment"
+        });
+      }
+
+      // ---- root redirect to planner page ----
       if (p === "/" || p === "/api") {
         return j({ service: "Delhi Pulse Edge",
                    endpoints: ["/api/health", "/api/journeys?from=&to=",

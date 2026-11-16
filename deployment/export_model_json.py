@@ -53,14 +53,16 @@ else:
     pickle.dump((PAT, STOP_MEMBER),
                 open(_cp, "wb"), protocol=pickle.HIGHEST_PROTOCOL)
 
-# ---- export as compact JSON ----
+# ---- export as compact JSON (uncapped membership!) ----
+# Build fresh: patterns_out AND UNCAPPED membership so edge search finds all routes
 patterns_out = []
 for p in PAT:
     patterns_out.append({"r": p["route_id"], "s": p["stops"]})
 
-member_out = {}
-for sid, lst in STOP_MEMBER.items():
-    member_out[sid] = [[pi, pos] for pi, pos in lst]
+member_out = {}  # <-- UNCAPPED for edge
+for pi, p in enumerate(PAT):
+    for pos, sid in enumerate(p["stops"]):
+        member_out.setdefault(sid, []).append([pi, pos])
 
 stops_out = {}
 for sid, (lat, lng, name) in stop_pos.items():
