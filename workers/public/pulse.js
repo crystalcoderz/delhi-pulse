@@ -86,7 +86,7 @@
   function loadGeo(hour, day) {
     const key = hour + '|' + day;
     if (geoCache.has(key)) return geoCache.get(key);
-    const request = fetch(`${API}/geo?hour=${hour}` + (day ? `&day=${encodeURIComponent(day)}` : ''))
+    const request = fetch(`${API}/geo?hour=${hour}&stride=3&limit=800` + (day ? `&day=${encodeURIComponent(day)}` : ''))
       .then(response => (response.ok ? response.json() : null))
       .then(fc => (fc && Array.isArray(fc.features) ? fc : null))
       .catch(() => null);

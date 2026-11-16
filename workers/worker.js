@@ -15,7 +15,9 @@
  *   /api/gmaps-drive?from=&to=&depart=      → Google Routes v2 traffic-aware
  *                                             driving time (comparison)
  *   /api/pulse                               → city speed curve
- *   /api/geo?hour=&limit=                    → route shapes colored by speed
+ *   /api/geo?hour=&limit=&stride=            → route shapes colored by speed
+ *   /api/status                              → model + edges + live counters
+ *   /api/maps-config                         → browser basemap key (v2 UI)
  *   /api/health                              → system status
  *
  * The Google server key lives as the Worker secret GOOGLE_MAPS_KEY and is
@@ -33,6 +35,34 @@ const CORS = {
 
 const j = (obj, status = 200) =>
   new Response(JSON.stringify(obj), { status, headers: { ...JSONH, ...CORS } });
+
+// E2-hardening: the three billed Google proxies get an ORIGIN ALLOWLIST, not
+// CORS *. A present-but-foreign Origin gets 403 (third-party pages always
+// send Origin). Same-origin fetches and non-browser clients pass the gate
+// and are contained instead by the Delhi geo-scope, normalized cache keys
+// and input caps below. TODO(pin): replace *.vercel.app with the exact prod host.
+const originBlocked = (request, url) => {
+  const origin = request.headers.get("origin");
+  if (!origin) return false;
+  try {
+    const host = new URL(origin).hostname;
+    return !(host === url.hostname || host === "localhost"
+          || host === "127.0.0.1" || host.endsWith(".vercel.app"));
+  } catch { return true; }
+};
+
+const jBilled = (obj, status, request, url) => {
+  const h = { ...JSONH, "access-control-allow-methods": "GET,OPTIONS", "vary": "Origin" };
+  const origin = request.headers.get("origin");
+  if (origin && !originBlocked(request, url)) {
+    h["access-control-allow-origin"] = origin;
+    h["access-control-allow-headers"] = "*";
+  }
+  return new Response(JSON.stringify(obj), { status, headers: h });
+};
+
+const inNCR = (la, ln) =>
+  la >= 26.5 && la <= 30.5 && ln >= 74.5 && ln <= 79.5;
 
 // per-isolate cache for billed Google drive comparisons (E2)
 const driveCache = new Map();
@@ -147,9 +177,12 @@ export default {
                                   referer: "https://delhi-pulse.prayaas.workers.dev/",
                                   ...extra });
 
-      // Browser config for the Maps JavaScript API basemap.
+      // Browser config for the Maps JavaScript API basemap. The browser key
+      // is public BY DESIGN (it must ship to the page); the real control is
+      // the Google-side HTTP-referrer + API restriction. The Origin check
+      // here only stops third-party web pages from reading it conveniently;
+      // non-browser callers can always fetch it.
       if (p === "/api/maps-config" || p === "/maps-config") {
-        // Only this site's own pages (or local dev) may read the browser key.
         const origin = request.headers.get("origin");
         if (origin) {
           const host = new URL(origin).hostname;
@@ -170,11 +203,14 @@ export default {
 
       // typing suggestions for the planner search box
       if (p === "/api/places/autocomplete" || p === "/places/autocomplete") {
+        if (originBlocked(request, url))
+          return jBilled({ error: "origin not allowed" }, 403, request, url);
         const input = (url.searchParams.get("input")
-                     || url.searchParams.get("q") || "").slice(0, 120);
-        if (!input) return j({ suggestions: [] }, 400);
-        if (!GKEY) return j({ suggestions: [],
-                              note: "places search not configured" });
+                     || url.searchParams.get("q") || "").slice(0, 60);
+        if (input.trim().length < 3)
+          return jBilled({ suggestions: [] }, 400, request, url);
+        if (!GKEY) return jBilled({ suggestions: [],
+                              note: "places search not configured" }, 503, request, url);
         const r = await fetch(
           "https://places.googleapis.com/v1/places:autocomplete"
           + "?$fields=suggestions.placePrediction.placeId"
@@ -186,38 +222,44 @@ export default {
                                    languageCode: "en",
                                    includedRegionCodes: ["in"] }),
           });
-        if (!r.ok) return j({ suggestions: [], note: `google ${r.status}` }, 502);
+        if (!r.ok) return jBilled({ suggestions: [], note: "google error" }, 502, request, url);
         const d = await r.json();
         const sugg = (d.suggestions || [])
           .map(s => { const pr = s.placePrediction || {};
             return { id: pr.placeId, text: (pr.text || {}).text,
                      types: (pr.types || []).slice(0, 3) }; })
           .filter(x => x.id && x.text);
-        return j({ suggestions: sugg.slice(0, 6),
-                   source: "google-places-new" });
+        return jBilled({ suggestions: sugg.slice(0, 6),
+                   source: "google-places-new" }, 200, request, url);
       }
 
       // place id → coordinates (for journey search after suggestion click)
       if (p === "/api/places/resolve" || p === "/places/resolve") {
+        if (originBlocked(request, url))
+          return jBilled({ error: "origin not allowed" }, 403, request, url);
         const pidRaw = url.searchParams.get("place_id") || "";
         const pid = pidRaw.replace(/^places\//, "");
         if (!/^[A-Za-z0-9_-]{10,200}$/.test(pid))
-          return j({ error: "valid place_id required" }, 400);
-        if (!GKEY) return j({ error: "places not configured" }, 503);
+          return jBilled({ error: "valid place_id required" }, 400, request, url);
+        if (!GKEY) return jBilled({ error: "places not configured" }, 503, request, url);
         const r = await fetch(
           `https://places.googleapis.com/v1/places/${encodeURIComponent(pid)}`
           + "?$fields=id,location,displayName,formattedAddress,types", {
             headers: gHead(),
           });
-        if (!r.ok) return j({ error: `google ${r.status}` }, 502);
+        if (!r.ok) return jBilled({ error: "place not found" }, 502, request, url);
         const d = await r.json();
         const loc = d.location || {};
-        return j({ place_id: d.id || pid,
+        // E2: the billed Place-Details proxy stays Delhi-scoped
+        if (loc.latitude == null
+            || !inNCR(loc.latitude, loc.longitude || 0))
+          return jBilled({ error: "place is outside the Delhi region" }, 404, request, url);
+        return jBilled({ place_id: d.id || pid,
                    name: (d.displayName || {}).text || "",
                    address: d.formattedAddress || null,
                    lat: loc.latitude ?? null, lng: loc.longitude ?? null,
                    types: (d.types || []).slice(0, 3),
-                   source: "google-places-new" });
+                   source: "google-places-new" }, 200, request, url);
       }
 
       // live google traffic-aware DRIVING time for the UI comparison strip
@@ -227,31 +269,48 @@ export default {
         const departT = url.searchParams.get("depart") || "";
         const m1 = from.match(/^(-?\d+\.?\d*),\s*(-?\d+\.?\d*)$/);
         const m2 = to.match(/^(-?\d+\.?\d*),\s*(-?\d+\.?\d*)$/);
-        if (!m1 || !m2) return j({ error: "from,to must be lat,lng" }, 400);
-        if (!GKEY) return j({ drive_min: null, note: "not configured" });
-        // E2: cache per (from, to, 15-min bucket) — repeated comparisons in
-        // one session should not re-bill the Google proxy
-        const bucket = Math.floor(Date.now() / 900000);
-        const ckey = from + "|" + to + "|" + bucket;
+        if (!m1 || !m2) return jBilled({ error: "from,to must be lat,lng" }, 400, request, url);
+        if (!GKEY) return jBilled({ drive_min: null, note: "not configured" }, 503, request, url);
+        if (originBlocked(request, url))
+          return jBilled({ error: "origin not allowed" }, 403, request, url);
+        // E2-geo: the billed Routes proxy is scoped to Delhi-NCR and to
+        // plausible city trips (was world-open)
+        const olat = parseFloat(m1[1]), olng = parseFloat(m1[2]);
+        const dlat = parseFloat(m2[1]), dlng = parseFloat(m2[2]);
+        if (!inNCR(olat, olng) || !inNCR(dlat, dlng))
+          return jBilled({ error: "outside the Delhi region" }, 400, request, url);
+        if (haversineM(olat, olng, dlat, dlng) > 120000)
+          return jBilled({ error: "origin and destination are too far apart" }, 400, request, url);
+        // E2: cache keyed on ROUNDED coords (kills spelling-variant re-billing)
+        // + the 15-min now-bucket; in-window departures also keyed by their
+        // own bucket so different future times within one now-bucket differ
+        const nowBucket = Math.floor(Date.now() / 900000);
+        let depKey = "";
+          let s = (departT || "").trim();
+          s = s.replace(/^(\d{4}-\d{2}-\d{2}) (\d{2}:\d{2}(:\d{2})?)$/, "$1T$2");
+          s = s.replace(/ ([+-]\d{2}:?\d{2})$/, "$1");
+          s = s.replace(/ (\d{2}:?\d{2})$/, "+$1");
+          if (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2})?$/.test(s)) s += "+05:30";
+          const t = new Date(s).getTime();
+          if (Number.isFinite(t))
+            depKey = Number.isFinite(t) && t > Date.now()
+              ? String(Math.floor(t / 900000)) : "live";
+        const ckey = olat.toFixed(4) + "," + olng.toFixed(4) + "|"
+                   + dlat.toFixed(4) + "," + dlng.toFixed(4) + "|"
+                   + nowBucket + "|" + depKey;
         const cached = driveCache.get(ckey);
-        if (cached) return j(cached);
+        if (cached) return jBilled(cached, 200, request, url);
         const body = {
-          origin: { location: { latLng: {
-            latitude: parseFloat(m1[1]), longitude: parseFloat(m1[2]) } } },
-          destination: { location: { latLng: {
-            latitude: parseFloat(m2[1]), longitude: parseFloat(m2[2]) } } },
+          origin: { location: { latLng: { latitude: olat, longitude: olng } } },
+          destination: { location: { latLng: { latitude: dlat, longitude: dlng } } },
           travelMode: "DRIVE",
           routingPreference: "TRAFFIC_AWARE",
         };
         if (departT) {
           // Google requires departureTime within [now, now + 7 days]; outside
           // that window it 400s, so let it default to live traffic instead.
-          // Garbage input must not throw (D1 discipline applies here too).
-          let s = departT.trim();
-          if (/\d{2}:\d{2}(:\d{2})? [+-]\d{2}:?\d{2}$/.test(s)) s = s.replace(" ", "+");
-          const t = new Date(s).getTime();
-          const now = Date.now();
-          if (Number.isFinite(t) && t > now && t < now + 7 * 24 * 3600 * 1000)
+          if (Number.isFinite(t) && t > Date.now()
+              && t < Date.now() + 7 * 24 * 3600 * 1000)
             body.departureTime = new Date(t).toISOString();
         }
         const r = await fetch(
@@ -262,20 +321,21 @@ export default {
             body: JSON.stringify(body),
           });
         if (!r.ok)
-          return j({ drive_min: null, note: `google ${r.status}` });
+          return jBilled({ drive_min: null, note: "google error" }, 200, request, url);
         const d = await r.json();
-        if (!d.routes || !d.routes.length) return j({ drive_min: null });
+        if (!d.routes || !d.routes.length)
+          return jBilled({ drive_min: null }, 200, request, url);
         const dur = parseFloat(d.routes[0].duration);
         const out = {
           drive_min: dur ? Math.round(dur / 60 * 10) / 10 : null,
           drive_km: Math.round((d.routes[0].distanceMeters || 0) / 100) / 10,
           source: "google-routes-v2-traffic-aware",
         };
-        if (out.drive_min != null) {          // store in the 15-min bucket cache
+        if (out.drive_min != null) {          // store in the bucketed cache
           if (driveCache.size > 512) driveCache.clear();
           driveCache.set(ckey, out);
         }
-        return j(out);
+        return jBilled(out, 200, request, url);
       }
 
       // ---- load model for all other endpoints ----
@@ -338,14 +398,20 @@ export default {
         const hour = Number.isFinite(hRaw) ? Math.min(23, Math.max(0, hRaw)) : 9;
         const lRaw = parseInt(url.searchParams.get("limit") ?? "600", 10);
         const limit = Number.isFinite(lRaw) ? Math.min(1500, Math.max(10, lRaw)) : 600;
+        const sRaw = parseInt(url.searchParams.get("stride") ?? "1", 10);
+        const stride = Number.isFinite(sRaw) ? Math.min(5, Math.max(1, sRaw)) : 1;
 
         const G = getRouteGeo(M);
         const feats = [];
-        const add = (g, sp, source) => feats.push(
-          '{"type":"Feature","properties":' + JSON.stringify({
-            route: g.route, name: g.name,
-            speed_kmh: Math.round(sp * 10) / 10,
-            color: speedColor(sp), source }) + "," + g.geom + "}");
+        let seen = 0;
+        const add = (g, sp, source) => {
+          if (seen++ % stride !== 0) return;   // thin before serializing
+          feats.push(
+            '{"type":"Feature","properties":' + JSON.stringify({
+              route: g.route, name: g.name,
+              speed_kmh: Math.round(sp * 10) / 10,
+              color: speedColor(sp), source, stride }) + "," + g.geom + "}");
+        };
         for (const g of G) {
           if (feats.length >= limit) break;
           const sp = M.speeds[g.route]?.[hour];
@@ -358,7 +424,7 @@ export default {
         }
         return new Response(
           '{"type":"FeatureCollection","features":[' + feats.join(",")
-          + '],"hour":' + hour + ',"day":null}',
+          + '],"hour":' + hour + ',"stride":' + stride + ',"day":null}',
           { headers: { ...JSONH, ...CORS,
                        "cache-control": "public, max-age=3600" } });
       }
@@ -368,6 +434,7 @@ export default {
         const fromT = url.searchParams.get("from");
         const toT = url.searchParams.get("to");
         const departT = url.searchParams.get("depart");
+        const asOfT = url.searchParams.get("asOf");
         const maxRaw = parseInt(url.searchParams.get("max") || "3", 10);
         const maxO = Number.isFinite(maxRaw)
           ? Math.min(6, Math.max(1, maxRaw)) : 3;   // D3: clamp 1..6
@@ -379,11 +446,13 @@ export default {
           text = (text||"").trim();
           const mc = text.match(/^(-?\d+\.?\d*),\s*(-?\d+\.?\d*)$/);
           if (mc) return { lat: parseFloat(mc[1]), lng: parseFloat(mc[2]) };
-          if (text.startsWith("stop:") && M.stops[text.slice(5)]) {
+          if (text.startsWith("stop:")
+              && Object.prototype.hasOwnProperty.call(M.stops, text.slice(5))) {
             const s = M.stops[text.slice(5)];
             return { lat: s[0], lng: s[1], stop_id: text.slice(5) };
           }
-          const lower = text.toLowerCase();
+          const lower = text.toLowerCase().trim();
+          if (lower.length < 2) return null;   // 1-char/blank matched everything
           let best = null;
           for (const sid of Object.keys(M.stops)) {
             const s = M.stops[sid];
@@ -409,49 +478,89 @@ export default {
           }
         }
 
-        // D1: robust depart parsing. A raw '+' in a URL query arrives here
-        // as a space; bare local times are IST (matching the local API);
-        // unparseable values get a 400 with a hint, not a 500.
+        // D1: structural depart parsing — handles every real form. The old
+        // regex-replace chain corrupted "...00 +05:30" into "00++05:30" and
+        // "2026-11-17 08:30" into garbage; a single structural match is
+        // simpler and provable. Bare local times = IST (local API parity);
+        // date-only = midnight IST; garbage -> 400 with a hint.
         let depEpoch = Date.now() / 1000;
         if (departT) {
           let s = departT.trim();
-          // a raw '+' in a query string arrives as a space; the sign may be
-          // absent entirely ("...08:30:00 05:30") or kept ("...08:30:00 +05:30")
-          s = s.replace(/ (\d{2}:?\d{2})$/, "+$1");
-          if (/\d{2}:\d{2}(:\d{2})? [+-]\d{2}:?\d{2}$/.test(s)) s = s.replace(" ", "+");
-          else if (/^\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}(:\d{2})?$/.test(s)) s += "+05:30";
+          const m = s.match(/^(\d{4}-\d{2}-\d{2})[T ](\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?)\s*([+-]\d{2}:?\d{2})?$/);
+          if (m) {
+            const off = m[3]
+              ? m[3].replace(/^([+-])(\d{2}):?(\d{2})$/, "$1$2:$3")
+              : "+05:30";
+            s = m[1] + "T" + m[2] + off;
+          } else if (/^\d{4}-\d{2}-\d{2}$/.test(s)) {
+            s = s + "T00:00:00+05:30";
+          }
           const t = new Date(s).getTime();
           if (!Number.isFinite(t))
             return j({ error: `depart cannot be parsed: "${departT}"`,
                        hint: "use ISO 8601, e.g. 2026-11-17T08:30:00+05:30" }, 400);
           depEpoch = t / 1000;
         }
-        const hour0 = Math.floor((depEpoch + 19800) / 3600 % 24);
+        // hour normalized for any epoch (pre-1970 negative-safe)
+        const hour0 = (((Math.floor((depEpoch + 19800) / 3600) % 24) + 24) % 24);
 
-        // Always include nearby stops, plus the exact stop if stop: given
+        // C3-lite: trips a human walks are answered walk-only (this also
+        // protects the search from degenerate same-point scans, P1 1102)
+        const crowFlyM = haversineM(origin.lat, origin.lng, dest.lat, dest.lng);
+        if (crowFlyM <= 250) {
+          const walkOnly = Math.max(0.5, crowFlyM * 1.3 / 80);
+          const o = {
+            transfers: 0,
+            total_min: Math.round(walkOnly * 10) / 10,
+            walk_o: 0, walk_d: Math.round(walkOnly * 10) / 10,
+            wait_min: 0, ride_min: 0,
+            route_id: null, route_name: "Walk",
+            board: null, board_name: null,
+            alight: null, alight_name: null,
+            board_at: new Date(depEpoch * 1000).toISOString(),
+            arrive: new Date((depEpoch + walkOnly * 60) * 1000).toISOString(),
+            legs: [{ type: "walk", minutes: Math.round(walkOnly * 10) / 10,
+                     coords: [[origin.lat, origin.lng], [dest.lat, dest.lng]] }],
+            eta_p50_min: Math.round(walkOnly * 10) / 10,
+            eta_p10_min: Math.round(walkOnly * 10) / 10,
+            eta_p90_min: Math.round(walkOnly * 1.2 * 10) / 10,
+            confidence: "walk-only",
+          };
+          return j({ options: [o], note: "walkable trip" });
+        }
+
+        // Always include nearby stops, plus the exact stop if stop: given.
+        // k=8 + per-stop 24-pattern slice keeps hub stops (some serve 100+
+        // patterns) inside the Workers CPU budget — the 12x12x183x183 scan
+        // of the first deploy hit Cloudflare 1102 errors under load.
+        const PATTERN_SLICE = 24;
         let oNear, dNear;
-        const mkNearby = (lat, lng, k=5, limit=2500) =>
+        const mkNearby = (lat, lng, k=8, limit=2500) =>
           Object.keys(M.stops)
             .map(sid => { const s = M.stops[sid];
               return { sid, d: haversineM(lat, lng, s[0], s[1]),
-                       name: s[2], lat: s[0], lng: s[1] }; })
-            .filter(x => (M.membership[x.sid] || []).length > 0)
+                        name: s[2], lat: s[0], lng: s[1],
+                        pats: (M.membership[sid] || []).slice(0, PATTERN_SLICE) }; })
+            .filter(x => x.pats.length > 0)
             .sort((a,b) => a.d - b.d).slice(0, k)
             .filter(x => x.d <= limit);
 
-        oNear = mkNearby(origin.lat, origin.lng, 12)          .filter(x => (M.membership[x.sid] || []).length > 0);
-        if (origin.stop_id && M.stops[origin.stop_id]) {
+        const hasStop = (id) =>
+          M.stops != null && Object.prototype.hasOwnProperty.call(M.stops, id);
+        oNear = mkNearby(origin.lat, origin.lng, 8);
+        if (origin.stop_id && hasStop(origin.stop_id)) {
           const s = M.stops[origin.stop_id];
           const exact = { sid: origin.stop_id, name: s[2],
-                          lat: s[0], lng: s[1], d: 0, walk_min: 0 };
+                          lat: s[0], lng: s[1], d: 0, walk_min: 0,
+                          pats: M.membership[origin.stop_id] || [] };
           oNear = [exact, ...oNear.filter(n => n.sid !== origin.stop_id)];
         }
-        dNear = mkNearby(dest.lat, dest.lng, 12)
-          .filter(x => (M.membership[x.sid] || []).length > 0);
-        if (dest.stop_id && M.stops[dest.stop_id]) {
+        dNear = mkNearby(dest.lat, dest.lng, 8);
+        if (dest.stop_id && hasStop(dest.stop_id)) {
           const s = M.stops[dest.stop_id];
           const exact = { sid: dest.stop_id, name: s[2],
-                          lat: s[0], lng: s[1], d: 0, walk_min: 0 };
+                          lat: s[0], lng: s[1], d: 0, walk_min: 0,
+                          pats: M.membership[dest.stop_id] || [] };
           dNear = [exact, ...dNear.filter(n => n.sid !== dest.stop_id)];
         }
         oNear = oNear.map(x => x.walk_min !== undefined ? x :
@@ -469,23 +578,22 @@ export default {
         const detourOf = (route) => M.detour?.[route] ?? 1.077;
         const bandOf = (route, hour) => M.band?.[route]?.[hour] ?? [0.85, 1.35];
         const usualWaitOf = (route, hour) => {
-          for (const dh of [0, -1, 1]) {
-            const h = ((hour + dh) % 24 + 24) % 24;
-            const w = M.headway[route]?.[h];
-            if (w != null) return Math.min(15, Math.max(0.75, w / 120));
-          }
-          return null;
+          const w = M.headway[route]?.[hour];
+          if (w == null || w > 3600) return null;
+          return Math.min(60, Math.max(0.75, w / 120));
         };
         const options = [];
         const seen = new Set();
+        const distinct = new Map();   // C1 push-dedupe: best per route sequence
         for (const oa of oNear) {
           for (const da of dNear) {
-            const oPat = M.membership[oa.sid] || [];
-            const dPat = M.membership[da.sid] || [];
+            const oPat = oa.pats || [];
+            const dPat = da.pats || [];
             for (const [pi, i] of oPat) {
               for (const [pj, j2] of dPat) {
                 if (pi !== pj || j2 <= i) continue;
                 const pat = M.patterns[pi];
+                if (!pat) continue;
                 const route = pat.r;
                 const rName = M.route_names[route] || route;
 
@@ -502,30 +610,44 @@ export default {
                   }
                 }
 
-                const sp = M.speeds[route]?.[hour0]
+                // speed floor 3 km/h: the model contains near-zero cells that
+                // would otherwise produce multi-thousand-minute rides
+                const sp = Math.max(3, M.speeds[route]?.[hour0]
                   ?? M.route_avg[route]
-                  ?? M.city_hour[hour0] ?? 18;
+                  ?? M.city_hour[hour0] ?? 18);
                 const rideS = distM * detourOf(route) * 3.6 / sp;
                 // B4: a route with no observed headway in this hour (±1h
                 // grace for sparse rows) is not running — offer no bus
                 // rather than the old 5-minute default wait.
                 let waitMin = null;
+                const hourWait = (h) => {
+                  const w = M.headway[route]?.[h];
+                  // actual observed service only: headways beyond an hour are
+                  // schedule arithmetic on dormant routes, not real service
+                  if (w == null || w > 3600) return null;
+                  return Math.min(60, Math.max(0.75, w / 120));
+                };
                 for (const dh of [0, -1, 1]) {
                   const h = ((hour0 + dh) % 24 + 24) % 24;
-                  const w = M.headway[route]?.[h];
-                  if (w != null) {
-                    waitMin = Math.min(15, Math.max(0.75, w / 120));
-                    break;
-                  }
+                  waitMin = hourWait(h);
+                  if (waitMin != null) break;
                 }
                 if (waitMin == null) continue;
                 const walkOMin = oa.d * 1.3 / 80;
                 const walkDMin = da.d * 1.3 / 80;
                 const total = walkOMin + waitMin + rideS/60 + walkDMin;
+                if (!Number.isFinite(total) || total < 0) continue;
 
                 const key = route + "|" + oa.sid + "|" + da.sid;
                 if (seen.has(key)) continue;
                 seen.add(key);
+
+                // C1 push-time dedupe: keep only the best candidate per route
+                // sequence, so scan-order caps cannot burn slots on duplicates
+                const seqKey = "0|" + route;
+                const prevBest = distinct.get(seqKey);
+                if (prevBest != null && prevBest <= total) continue;
+                distinct.set(seqKey, total);
 
                 options.push({
                   transfers: 0,
@@ -535,6 +657,7 @@ export default {
                   wait_min: Math.round(waitMin * 10) / 10,
                   ride_min: Math.round(rideS / 60 * 10) / 10,
                   route_id: route,
+                  route_code: rName,
                   route_name: rName,
                   board: oa.sid, board_name: oa.name,
                   alight: da.sid, alight_name: da.name,
@@ -589,14 +712,16 @@ export default {
         // origin stop to any downstream stop that pattern B serves before the
         // destination alight point. 2-min transfer buffer + route-hour waits,
         // second-leg speed taken at the hour the transfer actually happens.
+        // ---- transfer search only when directs are insufficient ----
         try {
-          const crowFlyM = haversineM(origin.lat, origin.lng, dest.lat, dest.lng);
+          if (options.length >= Math.max(4, maxO) || crowFlyM < 3000) {
+            /* direct answers (or a walkable trip) suffice; skip the scan */
           const maxLegM = crowFlyM * 1.8 + 6000;   // prune far-out zigzags
 
           // dest side: stop -> [[pj, j1, j2, d-index]] for every stop before alight
           const destMap = new Map();
           dNear.forEach((da, di) => {
-            for (const [pj, j2] of (M.membership[da.sid] || [])) {
+            for (const [pj, j2] of (da.pats || [])) {
               const B = M.patterns[pj];
               if (!B) continue;
               for (let j1 = 0; j1 < j2; j1++) {
@@ -609,12 +734,14 @@ export default {
           });
 
           const waitOf = (route, hour) => {
-            // B4: same service rule as the direct search — no headway within
-            // ±1h means the route is not running; null, not the 5-min default
+            // B4: real service only — headway ≤ 1h (beyond that is dormant-
+            // route schedule arithmetic, not service); ±1h grace for sparse
+            // rows; quoted waits cap at 60 min so sparse routes rank worse
             for (const dh of [0, -1, 1]) {
               const h = ((hour + dh) % 24 + 24) % 24;
               const w = M.headway[route]?.[h];
-              if (w != null) return Math.min(15, Math.max(0.75, w / 120));
+              if (w != null && w <= 3600)
+                return Math.min(60, Math.max(0.75, w / 120));
             }
             return null;
           };
@@ -626,7 +753,7 @@ export default {
           let evaluated = 0;
           scan:
           for (const oa of oNear) {
-            for (const [pi, i] of (M.membership[oa.sid] || [])) {
+            for (const [pi, i] of (oa.pats || [])) {
               const A = M.patterns[pi];
               if (!A) continue;
               let dA = 0;
@@ -648,6 +775,11 @@ export default {
                   if (seenX.has(key)) continue;
                   seenX.add(key);
 
+                  // CPU guard: counts only real candidates, placed before the
+                  // expensive dB sweep (was after it — cheap prunes skipped
+                  // counting and hub stops could blow the budget)
+                  if (++evaluated > 400) break scan;
+
                   let dB = 0;
                   for (let m = j1 + 1; m <= j2; m++) {
                     const t0 = M.stops[B.s[m - 1]], t1 = M.stops[B.s[m]];
@@ -655,15 +787,13 @@ export default {
                   }
                   if (dB > 2 * maxLegM) continue;
 
-                  if (++evaluated > 200) break scan;   // CPU guard
-
                   const walkOMin = oa.d * 1.3 / 80;
                   const walkDMin = da.d * 1.3 / 80;
                   const waitA = waitOf(A.r, hour0);
                   if (waitA == null) continue;      // B4: A not running this hour
                   const rideA = dA * detourOf(A.r) * 3.6 / speedOf(A.r, hour0) / 60;
                   const thour = Math.floor(
-                    (depEpoch + (walkOMin + waitA + rideA) * 60 + 19800)
+                    (depEpoch + (walkOMin + waitA + rideA + 2) * 60 + 19800)
                     / 3600 % 24);
                   const waitB = waitOf(B.r, thour);
                   if (waitB == null) continue;      // B4: B not running at transfer hour
@@ -692,6 +822,7 @@ export default {
                     wait_min: Math.round((waitA + xferMin) * 10) / 10,
                     ride_min: Math.round(rideMin * 10) / 10,
                     route_id: A.r + "+" + B.r,
+                    route_code: rA + "+" + rB,
                     route_name: rA + " + " + rB,
                     board: oa.sid, board_name: oa.name,
                     alight: da.sid, alight_name: da.name,
@@ -748,7 +879,11 @@ export default {
               }
             }
           }
-        } catch (e) { /* transfer search must never break direct results */ }
+        }
+        } catch (e) {
+          console.error("transfer search failed:", e && e.message || String(e));
+          /* transfer search must never break direct results */
+        }
 
         // C1: keep the best option per route sequence — the same itinerary
         // via a nearby board/alight pair is not a different option
@@ -762,8 +897,12 @@ export default {
         ranked.sort((a, b) => a.total_min - b.total_min);
         ranked.forEach(o => delete o._key);
 
+        const asOfNote = asOfT
+          ? "asOf time-travel replay is served by the full local API; the edge serves the pooled full-month model"
+          : null;
         return j({ options: ranked.slice(0, Math.min(maxO, 6)),
-                   note: ranked.length ? null : "no route found within 1 transfer" });
+                   note: ranked.length ? asOfNote
+                     : (asOfNote || "no route found within 1 transfer") });
       }
 
       // ---- lookups (existing) ----
@@ -794,7 +933,7 @@ export default {
           ok: true,
           routes: Object.keys(M2.route_avg).length,
           patterns: M2.patterns.length,
-          edges: M2.edge_count ?? 0,   // real edge cells land with the A2 export
+          edges: M2.edge_count ?? 0,   // trained edge cells shipped in the model asset
           live: { vehicles: 0, url: false, n_fetch: 0 },
           note: "edge deployment"
         });
@@ -809,14 +948,16 @@ export default {
                               "/api/places/autocomplete?input=",
                                "/api/places/resolve?place_id=",
                                "/api/gmaps-drive?from=&to=&depart=",
-                               "/api/pulse", "/api/geo?hour=&limit=",
+                               "/api/pulse", "/api/geo?hour=&limit=&stride=",
                                "/api/lookup?route=&hour="],
                    docs: "github.com/crystalcoderz/delhi-pulse" });
       }
 
       return j({ error: "not found" }, 404);
     } catch (e) {
-      return j({ error: String(e) }, 500);
+      console.error("worker error:", e && e.stack || String(e), url.pathname);
+      return j({ error: "internal error",
+                 ref: Math.random().toString(36).slice(2, 10) }, 500);
     }
   },
 };
