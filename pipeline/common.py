@@ -11,9 +11,14 @@ GTFS = DATA / "gtfs"        # static GTFS .txt files
 MODEL = ROOT / "model"      # trained lookup tables
 WEB = ROOT / "web"
 
+# Where the downloaded dataset archive lives. Default: inside the repo tree
+# (ROOT/data/<filename>) — the old default was a hard-coded Path.home() path on
+# one laptop. Set DP_ARCHIVE=/path/to/….7z to keep the archive elsewhere.
+# Scratch/temp artifacts stay repo-relative too: unpacked day DBs under
+# data/raw/ and DuckDB's spill dir .ducktmp/ (see 02_clean_pings.py).
 ARCHIVE = Path(os.environ.get(
     "DP_ARCHIVE",
-    "C:/Users/praya/Downloads/delhi-dtc-bus-gtfs-rt-2026-10.7z"))
+    str(DATA / "delhi-dtc-bus-gtfs-rt-2026-10.7z")))
 DATA_URL = "https://pub-091bd9e794bb4877b10b29e6df80f065.r2.dev/2026-10/delhi-dtc-bus-gtfs-rt-2026-10.7z"
 SUMS_URL = "https://pub-091bd9e794bb4877b10b29e6df80f065.r2.dev/2026-10/SHA256SUMS"
 
@@ -21,6 +26,12 @@ SUMS_URL = "https://pub-091bd9e794bb4877b10b29e6df80f065.r2.dev/2026-10/SHA256SU
 BBOX = (28.30, 76.75, 28.95, 77.60)   # lat_min, lng_min, lat_max, lng_max
 
 IST_OFFSET_S = 5 * 3600 + 30 * 60     # UTC -> IST
+
+# ---- v1.1 quantile model knobs (single source of truth) ----
+# consumed by 04_train_model, validation/holdout_journeys, export_d1
+MIN_CELL_N = 5      # edge cells with fewer observations are dropped
+SHRINK_K = 10       # pseudo-count for shrinking sparse cells
+DENSE_N = 24        # cells with n >= this keep their raw quantiles
 
 # Projection / cleaning knobs
 MAX_IMPLIED_KMH = 120.0               # pings implying faster than this + far jump get dropped

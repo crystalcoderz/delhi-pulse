@@ -40,7 +40,7 @@ export default async function run(page) {
     return r.length + ' stops found near NDLS';
   }));
 
-  await page.screenshot({ path: 'C:/Users/praya/delhi-pulse/docs/qa_planner_v2.png' });
+  await page.screenshot({ path: 'docs/qa_planner_v2.png' });
   out.steps.push('screenshot: docs/qa_planner_v2.png');
   return out;
 }

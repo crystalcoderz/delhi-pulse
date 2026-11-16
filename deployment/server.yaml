@@ -17,5 +17,7 @@ spec:
   rootVolume:
     size: 200Gi
     storageType: nvme
-  sshPublicKey: ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIBBpRbFx6A+8ZNS71L0d2NMlOomgIGQYjrATiFMhV+J2 delhi-pulse-vm
+  # Paste YOUR ed25519 public key here (single line: "ssh-ed25519 AAAA... comment").
+  # Do not commit real key material — generate a fresh VM key per environment.
+  sshPublicKey: REPLACE_WITH_YOUR_SSH_ED25519_PUBLIC_KEY
   public: true                     # request a public IP for ssh + API + demo
