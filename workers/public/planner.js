@@ -292,6 +292,16 @@
   });
 
   // ---------- search: DTC stops + Google Places via the edge proxy ----------
+  // One Places session token per typing session: autocomplete + resolve share
+  // it, and hiding the page starts a fresh session instead of resurrecting an
+  // old billed one. Guarded, because randomUUID needs a secure context.
+  const newToken = () => (typeof crypto.randomUUID === 'function' ? crypto.randomUUID() : '');
+  let sessionToken = newToken();
+  const sessionHeaders = () => (sessionToken ? { headers: { 'X-Session-Token': sessionToken } } : {});
+  document.addEventListener('visibilitychange', () => {
+    if (document.hidden) sessionToken = newToken();
+  });
+
   function openList(combo) {
     combo.list.hidden = false;
     combo.input.setAttribute('aria-expanded', 'true');
@@ -361,7 +371,7 @@
           async () => {
             name.textContent = 'Locating\u2026';
             try {
-              const found = await fetch(`${API}/places/resolve?place_id=${enc(place.id)}`).then(r => r.json());
+              const found = await fetch(`${API}/places/resolve?place_id=${enc(place.id)}`, sessionHeaders()).then(r => r.json());
               if (found.lat == null || found.lng == null) throw new Error('no coordinates');
               setPoint(end, found.name || place.text, [found.lng, found.lat], null, { pan: true });
               afterChoose(end);
@@ -404,7 +414,7 @@
       update();
     });
     if (wantPlaces) {
-      getJSON(`/places/autocomplete?input=${enc(query)}`, null).then(res => {
+      getJSON(`/places/autocomplete?input=${enc(query)}`, null, sessionHeaders()).then(res => {
         placeHits = res && Array.isArray(res.suggestions) ? res.suggestions : [];
         pending--;
         update();
@@ -696,7 +706,7 @@
     let to = picks.to && picks.to.coord;
     if (!from || !to) {
       // typed endpoints (no map coords): derive them from the best journey's
-      // own leg geometry so the strip and pins still show
+      // own leg geometry so the strip still shows
       const legs = Array.isArray(best.legs) ? best.legs : [];
       const first = legs[0] || {};
       const last = legs[legs.length - 1] || {};
@@ -704,15 +714,17 @@
       const cN = ((last.coords || [])[1]) || (last.coords || [])[0];
       if (c0) from = [c0[1], c0[0]];
       if (cN) to = [cN[1], cN[0]];
-      if (from && to && pins) {
-        try { setEnds(picks.from ? 'from' : 'from', from); } catch (e) { /* map ops best-effort */ }
-        try { setEnds('to', to); } catch (e) { /* map ops best-effort */ }
-      }
     }
     if (!from || !to) return;
     const depart = departISO();
+    // Optimistic chip while Google is asked: it yields to the real comparison
+    // when the answer lands, and disappears if it never does.
+    const waiting = h('p', { class: 'gcompare', text: 'Asking Google for the drive time\u2026' });
+    $('results').prepend(waiting);
+    setTimeout(() => waiting.remove(), 10000);
     getJSON(`/gmaps-drive?from=${from[1]},${from[0]}&to=${to[1]},${to[0]}` + (depart ? `&depart=${enc(depart)}` : ''), null)
       .then(drive => {
+        waiting.remove();
         if (seq !== planSeq || !drive || !(drive.drive_min > 0)) return;
         const ours = Number(best.total_min) || 0;
         $('results').prepend(h('p', { class: 'gcompare' },

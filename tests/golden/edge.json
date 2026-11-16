@@ -1,0 +1,122 @@
+{
+  "note": "Informational snapshot from workers/smoke.mjs; do not diff in CI.",
+  "checked_at": "2026-11-16T17:21:16.186Z",
+  "base": "https://delhi-pulse.prayaas.workers.dev",
+  "requests": [
+    {
+      "path": "/api/health",
+      "status": 200,
+      "ms": 416
+    },
+    {
+      "path": "/api/status",
+      "status": 200,
+      "ms": 35
+    },
+    {
+      "path": "/api/pulse",
+      "status": 200,
+      "ms": 35
+    },
+    {
+      "path": "/api/stops/search?q=Kashmere",
+      "status": 200,
+      "ms": 31
+    },
+    {
+      "path": "/api/stops/nearby?lat=28.6315&lng=77.2197&radius=1200",
+      "status": 200,
+      "ms": 63
+    },
+    {
+      "path": "/api/journeys?from=28.6675%2C77.2281&to=28.5491%2C77.2533&depart=2026-11-17T08%3A30%3A00%2B05%3A30&max=6",
+      "status": 200,
+      "ms": 65
+    },
+    {
+      "path": "/api/journeys?from=28.6675%2C77.2281&to=28.5491%2C77.2533&depart=2026-11-17T08%3A30%3A00%2B05%3A30&max=99",
+      "status": 200,
+      "ms": 59
+    },
+    {
+      "path": "/api/journeys?from=28.6675%2C77.2281&to=28.5491%2C77.2533&depart=2026-11-17T08%3A30%3A00%2B05%3A30&max=-1",
+      "status": 200,
+      "ms": 65
+    },
+    {
+      "path": "/api/journeys?from=28.6675%2C77.2281&to=28.5491%2C77.2533&depart=2026-11-17T08%3A30%3A00%2B05%3A30&max=3&asOf=2026-11-03T09%3A00%3A00%2B05%3A30",
+      "status": 200,
+      "ms": 59
+    },
+    {
+      "path": "/api/journeys?from=Kashmere+Gate&to=Nehru+Place&depart=2026-11-17T08%3A30%3A00%2B05%3A30&max=6",
+      "status": 200,
+      "ms": 76
+    }
+  ],
+  "summary": {
+    "requests": 10,
+    "checks": 9,
+    "failed": 0,
+    "warnings": 1
+  },
+  "checks": [
+    {
+      "name": "health: ok/stop/pattern/route counts",
+      "ok": true
+    },
+    {
+      "name": "status: routes/edges/live shape",
+      "ok": true
+    },
+    {
+      "name": "pulse: full 24-hour city curve",
+      "ok": true
+    },
+    {
+      "name": "stops/search: bounded result shape",
+      "ok": true
+    },
+    {
+      "name": "stops/nearby: sorted by distance within radius",
+      "ok": true
+    },
+    {
+      "name": "journeys: options sorted, bands ordered, fields frozen",
+      "ok": true
+    },
+    {
+      "name": "journeys: max=99 clamps to 6 (D3)",
+      "ok": true
+    },
+    {
+      "name": "journeys: max=-1 clamps to 1 (D3)",
+      "ok": true
+    },
+    {
+      "name": "journeys: asOf note prepended alongside options (D7)",
+      "ok": true
+    }
+  ],
+  "warnings": [
+    "place-name path returned no options for Kashmere Gate -> Nehru Place (no route found within 1 transfer)"
+  ],
+  "fatal": null,
+  "snapshot": {
+    "from": "Kashmere Gate ISBT (coords)",
+    "to": "Nehru Place (coords)",
+    "depart": "2026-11-17T08:30:00+05:30",
+    "options": [
+      {
+        "route_code": "425UP",
+        "transfers": 0,
+        "total_min": 64.2,
+        "eta_p10_min": 50.2,
+        "eta_p50_min": 64.2,
+        "eta_p90_min": 86.1,
+        "usual_p50_min": 79.9,
+        "usual_hour_ist": 11
+      }
+    ]
+  }
+}

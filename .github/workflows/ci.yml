@@ -1,0 +1,61 @@
+name: ci
+
+# Single job, three gates: pytest (unit + API invariants), byte-compile every
+# Python package, and the read-only edge smoke.  The smoke step needs the
+# repository secret EDGE_URL; without it (fork PRs, first-time setup) the step
+# is skipped and the rest of CI still runs.
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: pytest + compileall + edge smoke
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      # Repository secret -> EDGE_URL.  Empty means "skip the live smoke".
+      EDGE_URL: ${{ secrets.EDGE_URL }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      # Only the modules the tests import.  The pinned runtime set (including
+      # the service extras) lives in requirements.txt and is heavier than CI
+      # needs; tests skip cleanly when duckdb/pandas are unavailable.
+      - name: Install test dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install pytest duckdb pandas
+
+      - name: Unit tests and API invariants
+        run: python -m pytest tests/ -q
+
+      - name: Byte-compile Python packages
+        run: python -m compileall -q pipeline validation deployment api tests
+
+      - name: Check smoke script syntax
+        run: node --check workers/smoke.mjs
+
+      - name: Edge smoke (read-only, never billed endpoints)
+        if: env.EDGE_URL != ''
+        continue-on-error: true
+        run: node workers/smoke.mjs

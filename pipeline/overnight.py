@@ -10,6 +10,9 @@ import sys
 import time
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from common import CLEAN  # freshness guard + corpus glob root
+
 print = functools.partial(print, flush=True)
 
 ROOT = Path(__file__).resolve().parent.parent

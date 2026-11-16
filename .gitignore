@@ -1,21 +1,33 @@
-﻿.venv/
+﻿# --- Python ---
+.venv/
 __pycache__/
 *.pyc
+*.pyo
+*.egg-info/
+
+# --- secrets + local env ---
 .env
+.env.*
+!.env.example
+
+# --- bulk data + trained artifacts (published on Hugging Face) ---
 data/
-model/*.parquet
-model/*.json
-*.log
+model/
+*.7z
+*.duckdb
 .ducktmp/
-.DS_Store
 
+# --- Cloudflare / Vercel local state ---
 .wrangler/
-dev/
-
-docs/d1_*.sql
-model/patterns_*.pkl
-
 .vercel/
-
 .tmp/
-.wrangler/
+.cache/
+
+# --- scratch scripts + generated SQL ---
+dev/
+docs/d1_*.sql
+
+# --- logs + OS noise ---
+*.log
+.DS_Store
+Thumbs.db

@@ -10,10 +10,19 @@ Rebuilds the validation the brief deserves:
   * SCALE: mean ride time reported beside the MAE.
   * BREAKDOWNS: error by hour band and by journey length band.
 
-The model under test mirrors the deployed v1.1: edge p50 with n>=5 floor
-and route-hour-implied shrinkage (K=10), traversal route-hour fallback.
+The model under test mirrors the deployed v1.1: edge p50 with a
+MIN_CELL_N floor and route-hour-implied shrinkage (SHRINK_K, DENSE_N),
+traversal route-hour fallback. The knobs are imported from
+pipeline/common.py — the same constants 04_train_model.py trains with —
+so this holdout can never drift from the served model.
 
-Output: model/holdout_journeys.json + console summary.
+Output: model/holdout_journeys.json + console summary. B7: the JSON
+carries `band_coverage` — the share of scored journeys with
+pred_p10 <= ride_s <= pred_p90, where the journey band is built
+ADDITIVELY from per-leg p10/p90 (same shrink formula as the edge
+table). Fallback legs have no observed quantiles, so the route-hour
+point estimate stands in on BOTH band edges: a degenerate interval
+that makes fallback-heavy journeys (honestly) hard to cover.
 """
 import json
 import sys
@@ -25,7 +34,7 @@ import pandas as pd
 print_ = lambda *a: print(*a, flush=True)  # noqa: E731
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "pipeline"))
-from common import CLEAN, MODEL  # noqa: E402
+from common import CLEAN, DENSE_N, MIN_CELL_N, MODEL, SHRINK_K  # noqa: E402
 
 TRAIN_END = "2026-10-24"
 TEST_START = "2026-10-25"
@@ -66,7 +75,7 @@ def run():
                    COUNT(*) AS n,
                    median(dist_m) AS dm
             FROM read_parquet([{train_f}])
-            GROUP BY 1,2,3,4 HAVING COUNT(*) >= 5
+            GROUP BY 1,2,3,4 HAVING COUNT(*) >= {MIN_CELL_N}
         ), rh AS (
             SELECT route_id, hour_ist,
                    SUM(dur_s) AS rdur, SUM(dist_m) AS rdist
@@ -77,19 +86,32 @@ def run():
                    CASE WHEN r.rdist > 0
                         THEN c.dm * r.rdur / r.rdist END AS imp_s
             FROM raw c JOIN rh r USING (route_id, hour_ist)
+        ), b AS (
+            SELECT route_id, from_stop, to_stop, hour_ist, n,
+                   CASE WHEN n >= {DENSE_N} OR imp_s IS NULL THEN q50
+                        ELSE (n * q50 + {SHRINK_K} * imp_s)
+                             / (n + {SHRINK_K}) END AS p50,
+                   CASE WHEN n >= {DENSE_N} OR imp_s IS NULL
+                        THEN GREATEST(q10, 0.4 * q50)
+                        ELSE GREATEST(0.4 * q50,
+                             (n * q50 + {SHRINK_K} * imp_s)
+                             / (n + {SHRINK_K})
+                             - (q50 - q10) * n / (n + {SHRINK_K})) END AS p10,
+                   CASE WHEN n >= {DENSE_N} OR imp_s IS NULL THEN q90
+                        ELSE (n * q50 + {SHRINK_K} * imp_s)
+                             / (n + {SHRINK_K})
+                             + (q90 - q50) * n / (n + {SHRINK_K}) END AS p90
+            FROM sh
         )
+        -- Ordering clamps exactly as 04_train_model.py emits p10_s/p90_s:
+        -- a sparse cell whose route-hour-implied time collapses below
+        -- 0.4*q50 could otherwise emit p10 > p50 and poison coverage.
         SELECT route_id, from_stop, to_stop, hour_ist,
-               CASE WHEN n >= 24 OR imp_s IS NULL THEN q50
-                    ELSE (n * q50 + 10 * imp_s) / (n + 10) END AS p50,
-               CASE WHEN n >= 24 OR imp_s IS NULL THEN GREATEST(q10, 0.4 * q50)
-                    ELSE GREATEST(0.4 * q50,
-                         (n * q50 + 10 * imp_s) / (n + 10)
-                         - (q50 - q10) * n / (n + 10)) END AS p10,
-               CASE WHEN n >= 24 OR imp_s IS NULL THEN q90
-                    ELSE (n * q50 + 10 * imp_s) / (n + 10)
-                         + (q90 - q50) * n / (n + 10) END AS p90,
+               LEAST(p10, p50) AS p10,
+               p50,
+               GREATEST(p90, p50, LEAST(p10, p50) * 1.05) AS p90,
                n
-        FROM sh
+        FROM b
     """)
     con.execute(f"""
         CREATE OR REPLACE TABLE t_rh AS
@@ -136,7 +158,11 @@ def run():
     con.register("jn", journeys)
 
     # ---- score: predict each leg from TRAIN-window stats only; each leg
-    # is timed at its own IST hour (mirrors the deployed per-leg hour) ----
+    # is timed at its own IST hour (mirrors the deployed per-leg hour).
+    # B7: per-leg p10/p90 ride along (t_edge already carries the shrunk
+    # quantiles); the journey band is their ADDITIVE sum, mirroring how
+    # pred_s itself is built. Fallback legs have no observed quantiles, so
+    # the route-hour point estimate stands in on BOTH band edges.
     scored = con.execute(f"""
         WITH legs AS (
             SELECT tr.route_id, tr.trip_id,
@@ -149,6 +175,10 @@ def run():
             SELECT l.route_id, l.trip_id, l.d_ist, l.seg, l.hops,
                    COALESCE(e.p50, l.dist_m * 3.6 / NULLIF(r.sp, 0))
                        AS leg_pred_s,
+                   COALESCE(e.p10, l.dist_m * 3.6 / NULLIF(r.sp, 0))
+                       AS leg_p10_s,
+                   COALESCE(e.p90, l.dist_m * 3.6 / NULLIF(r.sp, 0))
+                       AS leg_p90_s,
                    CASE WHEN e.p50 IS NULL THEN 1 ELSE 0 END AS fb
             FROM legs l
             LEFT JOIN t_edge e
@@ -159,10 +189,12 @@ def run():
         )
         SELECT route_id, trip_id, d_ist, seg, hops,
                SUM(leg_pred_s) AS pred_s,
+               SUM(leg_p10_s) AS pred_p10_s,
+               SUM(leg_p90_s) AS pred_p90_s,
                SUM(fb) AS n_fallback,
                COUNT(*) AS n_legs
         FROM per_leg
-        GROUP BY 1,2,3,4,5,6
+        GROUP BY route_id, trip_id, d_ist, seg, hops
         HAVING COUNT(*) = hops      -- score journeys whole or not at all
     """).df()
     print_(f"[j] journeys scored: {len(scored):,}")
@@ -173,6 +205,12 @@ def run():
                      on=["route_id", "trip_id", "d_ist", "seg"])
     df["err_min"] = (df.pred_s - df.ride_s) / 60.0
     df["abs_min"] = df.err_min.abs()
+    # B7: covered = observed ride time lands inside the additive p10..p90
+    # band. Journeys that are entirely on fallback get a degenerate band
+    # (pred_p10 == pred_p90 == pred_s) and count as uncovered unless the
+    # point estimate lands exactly on ride_s.
+    df["covered"] = ((df.pred_p10_s <= df.ride_s)
+                     & (df.ride_s <= df.pred_p90_s))
 
     def band(v, bins):
         for lo, hi in bins:
@@ -192,6 +230,8 @@ def run():
         "bias_min": round(df.err_min.mean(), 2),
         "within_5_min": round((df.abs_min <= 5).mean(), 3),
         "within_10_min": round((df.abs_min <= 10).mean(), 3),
+        "band_coverage": (round(float(df.covered.mean()), 3)
+                          if len(df) else 0.0),
         "fallback_leg_share": round(float(df.n_fallback.sum())
                                     / max(1, int(df.n_legs.sum())), 3),
         "legs_per_journey": round(float(df.n_legs.mean()), 1),
@@ -210,7 +250,8 @@ def run():
     (MODEL / "holdout_journeys.json").write_text(json.dumps(out, indent=2))
     print_(f"[j] MAE {out['mae_min']} min on mean ride "
            f"{out['mean_ride_min']} min ({out['n_journeys']} journeys; "
-           f"{out['fallback_leg_share']*100:.0f}% legs on fallback)")
+           f"{out['fallback_leg_share']*100:.0f}% legs on fallback; "
+           f"band_coverage {out['band_coverage']:.3f})")
     for b in sorted(out["by_hour_band"]):
         d_ = out["by_hour_band"][b]
         print_(f"    hour {b:>6}: n={d_['n']:>4} mae={d_['mae_min']:>6}"

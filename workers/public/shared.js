@@ -29,8 +29,8 @@ window.DelhiPulse = (() => {
     return node;
   }
 
-  function getJSON(path, fallback) {
-    return fetch(API + path)
+  function getJSON(path, fallback, options) {
+    return fetch(API + path, options)
       .then(response => response.json())
       .catch(() => fallback);
   }

@@ -6,6 +6,10 @@
 
   const hourInput = $('hour');
   const daySelect = $('day');
+  // The markup ships a 5-22 daytime slider, but the model and /geo cover the
+  // full 24-hour day; widen it here before the bounds are read below.
+  hourInput.min = '0';
+  hourInput.max = '23';
   const MIN_HOUR = Number(hourInput.min);
   const MAX_HOUR = Number(hourInput.max);
   const PLAY_INTERVAL_MS = 1100;
@@ -49,6 +53,18 @@
 
   function setStatus(text) {
     $('geoStatus').textContent = text;
+  }
+
+  // The line reports the true served route count from /status: the per-hour
+  // feature feed is both capped (limit=800) and stride-thinned, so its length
+  // would understate the map. Falls back to the feature count until /status
+  // answers.
+  let servedRoutes = 0;
+  let statusFeed = null;
+
+  function showSummary(fc, hour) {
+    statusFeed = { fc, hour, seq: refreshSeq };
+    setStatus(summary(fc, hour));
   }
 
   // ---------- map layer ----------
@@ -155,7 +171,7 @@
   }
 
   function summary(fc, hour) {
-    const total = fc.features.length;
+    const total = fc.features.length ? (servedRoutes || fc.features.length) : 0;
     if (!total) return `No route speeds recorded at ${hourLabel(hour)}.`;
     const averaged = fc.features.filter(f => f.properties && f.properties.source === 'route-avg').length;
     const routes = `${total.toLocaleString('en-IN')} routes at ${hourLabel(hour)}.`;
@@ -177,7 +193,7 @@
     clearTimeout(slow);
     if (seq !== refreshSeq) return;
     if (!fc) return setStatus('Route speeds could not be loaded for this hour. The previous hour is still shown.');
-    if (mapFailed) return setStatus(summary(fc, hour));
+    if (mapFailed) return showSummary(fc, hour);
 
     await mapReady;
     if (seq !== refreshSeq) return;
@@ -186,7 +202,7 @@
     map.data.forEach(feature => previous.push(feature));
     map.data.addGeoJson(fc);
     for (const feature of previous) map.data.remove(feature);
-    setStatus(summary(fc, hour));
+    showSummary(fc, hour);
   }
 
   // ---------- playback ----------
@@ -240,5 +256,15 @@
       daySelect.append(h('option', { value: day, text: 'Replay ' + String(day).replace(/_/g, '-') }));
     }
     $('dayField').hidden = false;
+  });
+
+  // True served route count for the status line; if a summary is already on
+  // screen it is rewritten now, so the first paint does not stick at the
+  // capped feature count.
+  getJSON('/status', null).then(status => {
+    const routes = Number(status && status.routes);
+    if (!Number.isFinite(routes) || routes <= 0) return;
+    servedRoutes = routes;
+    if (statusFeed && statusFeed.seq === refreshSeq) setStatus(summary(statusFeed.fc, statusFeed.hour));
   });
 })();
