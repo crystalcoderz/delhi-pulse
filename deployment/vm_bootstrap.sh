@@ -36,12 +36,19 @@ LOG "python env ok"
 
 # 3) archive --------------------------------------------------------------------
 mkdir -p /opt/archive
-# resume-safe: always dial the download with -C -; instant if already complete
-if [ ! -s "$DP_ARCHIVE" ] || [ "$(stat -c%s "$DP_ARCHIVE" 2>/dev/null || echo 0)" -lt 15000000000 ]; then
-  LOG "downloading/resuming archive (~15 GB) from R2 ..."
-  curl -sS --retry 10 --retry-delay 2 -C - -o "$DP_ARCHIVE" \
-    https://pub-091bd9e794bb4877b10b29e6df80f065.r2.dev/2026-10/delhi-dtc-bus-gtfs-rt-2026-10.7z \
-    && LOG "archive transfer ok" || { LOG "archive download FAILED"; exit 1; }
+URL=https://pub-091bd9e794bb4877b10b29e6df80f065.r2.dev/2026-10/delhi-dtc-bus-gtfs-rt-2026-10.7z
+# resume-proof loop: curl error 18 (transfer closed) is NOT auto-retried by
+# --retry, so we loop ourselves and -C - resumes byte-exact every time.
+ok=""
+for i in $(seq 1 40); do
+  if curl -sS --retry-all-errors --retry 5 --retry-delay 2 -C - \
+       -o "$DP_ARCHIVE" "$URL"; then ok=1; break; fi
+  LOG "download interrupted (attempt $i) — resuming from $(stat -c%s "$DP_ARCHIVE" 2>/dev/null || echo 0) bytes"
+  sleep 2
+done
+if [ -z "$ok" ] || [ "$(stat -c%s "$DP_ARCHIVE" 2>/dev/null || echo 0)" -lt 15000000000 ]; then
+  LOG "archive FAILED after retries: $(stat -c%s "$DP_ARCHIVE" 2>/dev/null || echo 0) bytes"
+  exit 1
 fi
 LOG "archive ready: $(du -h "$DP_ARCHIVE" | cut -f1)"
 # spot integrity test (single known-good member; the global SHA is absent)
