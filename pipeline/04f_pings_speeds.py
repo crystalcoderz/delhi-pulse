@@ -13,7 +13,7 @@ from pathlib import Path
 
 import duckdb
 
-from common import ensure_dirs, CLEAN, IST_OFFSET_S
+from common import ensure_dirs, CLEAN, IST_OFFSET_S, hour_ist_expr, dow_ist_expr
 
 MAX_PAIR_KMH = 90.0   # implied speeds above this are GPS noise
 MIN_PAIR_M = 15.0     # very short pairs are jitter
@@ -34,8 +34,8 @@ def main(day: str):
     df = con.execute(f"""
         WITH seq AS (
             SELECT route_id, lat, lng, ts_utc,
-                   hour(to_timestamp(ts_utc + {IST_OFFSET_S})) AS hour_ist,
-                   isodow(to_timestamp(ts_utc + {IST_OFFSET_S})) AS dow_ist,
+                   {hour_ist_expr("ts_utc")} AS hour_ist,
+                   {dow_ist_expr("ts_utc")} AS dow_ist,
                    lead(lat) OVER w AS nlat,
                    lead(lng) OVER w AS nlng,
                    lead(ts_utc) OVER w AS nts

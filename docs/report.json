@@ -1,10 +1,22 @@
 {
-  "generated_utc": "2026-11-16T05:30:27.432987",
+  "generated_utc": "2026-11-16T18:54:53.366130+00:00",
   "model": {
     "traversals": {
-      "version": "v0-medians",
-      "generated_utc": "2026-11-15T19:11:27.549306",
+      "version": "v1.1-quantiles-shrunk",
+      "generated_utc": "2026-11-16T16:37:31.229923+00:00",
       "days": [
+        "2026_10_01",
+        "2026_10_02",
+        "2026_10_03",
+        "2026_10_04",
+        "2026_10_05",
+        "2026_10_06",
+        "2026_10_07",
+        "2026_10_08",
+        "2026_10_09",
+        "2026_10_10",
+        "2026_10_11",
+        "2026_10_12",
         "2026_10_13",
         "2026_10_14",
         "2026_10_15",
@@ -24,16 +36,28 @@
         "2026_10_30",
         "2026_10_31"
       ],
-      "n_traversal_rows": 23194631,
-      "n_trips_observed": 669362,
-      "n_edge_hour_cells": 839382,
-      "n_routes": 2215,
-      "quantiles": "p50 only (v0); p10/p90 arrive with the LightGBM pass"
+      "n_traversal_rows": 39164399,
+      "n_trips_observed": 1073526,
+      "n_edge_hour_cells": 853480,
+      "n_routes": 2245,
+      "quantiles": "p10/p50/p90 empirical; cells n>=5; sparse cells (n<24) shrunk toward route-hour implied time (K=10)"
     },
     "ping_speeds": {
       "version": "v1-pings-real",
-      "generated_utc": "2026-11-15T19:06:55.697411",
+      "generated_utc": "2026-11-16T16:09:32.682147",
       "source_days": [
+        "2026_10_01",
+        "2026_10_02",
+        "2026_10_03",
+        "2026_10_04",
+        "2026_10_05",
+        "2026_10_06",
+        "2026_10_07",
+        "2026_10_08",
+        "2026_10_09",
+        "2026_10_10",
+        "2026_10_11",
+        "2026_10_12",
         "2026_10_13",
         "2026_10_14",
         "2026_10_15",
@@ -54,13 +78,146 @@
         "2026_10_30",
         "2026_10_31"
       ],
-      "n_route_hour_cells": 38062,
-      "n_routes": 2279,
+      "n_route_hour_cells": 40211,
+      "n_routes": 2303,
       "n_city_hour_cells": 24,
       "note": "network speeds from ping pairs; stop-level quantiles arrive with GTFS"
     }
   },
-  "cleaning": {},
+  "cleaning": {
+    "2026_10_01": {
+      "day": "2026_10_01",
+      "n_total": 31290299,
+      "n_no_trip": 0,
+      "n_bad_ts": 0,
+      "n_bad_latlng": 0,
+      "n_in_bbox": 31256451,
+      "n_distinct_keys": 19242500,
+      "n_kept": 19210530,
+      "pct_kept": 61.4
+    },
+    "2026_10_02": {
+      "day": "2026_10_02",
+      "n_total": 29316111,
+      "n_no_trip": 0,
+      "n_bad_ts": 0,
+      "n_bad_latlng": 0,
+      "n_in_bbox": 29283568,
+      "n_distinct_keys": 18857954,
+      "n_kept": 18826610,
+      "pct_kept": 64.2
+    },
+    "2026_10_03": {
+      "day": "2026_10_03",
+      "n_total": 31516372,
+      "n_no_trip": 0,
+      "n_bad_ts": 0,
+      "n_bad_latlng": 0,
+      "n_in_bbox": 31482772,
+      "n_distinct_keys": 20028789,
+      "n_kept": 19997025,
+      "pct_kept": 63.4
+    },
+    "2026_10_04": {
+      "day": "2026_10_04",
+      "n_total": 30213040,
+      "n_no_trip": 0,
+      "n_bad_ts": 0,
+      "n_bad_latlng": 0,
+      "n_in_bbox": 30180487,
+      "n_distinct_keys": 19581846,
+      "n_kept": 19550874,
+      "pct_kept": 64.7
+    },
+    "2026_10_05": {
+      "day": "2026_10_05",
+      "n_total": 30991505,
+      "n_no_trip": 0,
+      "n_bad_ts": 0,
+      "n_bad_latlng": 0,
+      "n_in_bbox": 30960283,
+      "n_distinct_keys": 18906129,
+      "n_kept": 18876706,
+      "pct_kept": 60.9
+    },
+    "2026_10_06": {
+      "day": "2026_10_06",
+      "n_total": 30857544,
+      "n_no_trip": 0,
+      "n_bad_ts": 0,
+      "n_bad_latlng": 0,
+      "n_in_bbox": 30823798,
+      "n_distinct_keys": 18895153,
+      "n_kept": 18863822,
+      "pct_kept": 61.1
+    },
+    "2026_10_07": {
+      "day": "2026_10_07",
+      "n_total": 25535790,
+      "n_no_trip": 0,
+      "n_bad_ts": 0,
+      "n_bad_latlng": 0,
+      "n_in_bbox": 25505157,
+      "n_distinct_keys": 15802078,
+      "n_kept": 15773271,
+      "pct_kept": 61.8
+    },
+    "2026_10_08": {
+      "day": "2026_10_08",
+      "n_total": 30213919,
+      "n_no_trip": 0,
+      "n_bad_ts": 0,
+      "n_bad_latlng": 0,
+      "n_in_bbox": 30180826,
+      "n_distinct_keys": 18967705,
+      "n_kept": 18935843,
+      "pct_kept": 62.7
+    },
+    "2026_10_09": {
+      "day": "2026_10_09",
+      "n_total": 29099431,
+      "n_no_trip": 0,
+      "n_bad_ts": 0,
+      "n_bad_latlng": 0,
+      "n_in_bbox": 29066110,
+      "n_distinct_keys": 18107268,
+      "n_kept": 18074652,
+      "pct_kept": 62.1
+    },
+    "2026_10_10": {
+      "day": "2026_10_10",
+      "n_total": 26763426,
+      "n_no_trip": 0,
+      "n_bad_ts": 0,
+      "n_bad_latlng": 0,
+      "n_in_bbox": 26728933,
+      "n_distinct_keys": 17050053,
+      "n_kept": 17016309,
+      "pct_kept": 63.6
+    },
+    "2026_10_11": {
+      "day": "2026_10_11",
+      "n_total": 25936964,
+      "n_no_trip": 0,
+      "n_bad_ts": 0,
+      "n_bad_latlng": 0,
+      "n_in_bbox": 25904949,
+      "n_distinct_keys": 17217060,
+      "n_kept": 17188025,
+      "pct_kept": 66.3
+    },
+    "2026_10_12": {
+      "day": "2026_10_12",
+      "n_total": 26210474,
+      "n_no_trip": 0,
+      "n_bad_ts": 0,
+      "n_bad_latlng": 0,
+      "n_in_bbox": 26177868,
+      "n_distinct_keys": 16464867,
+      "n_kept": 16434243,
+      "pct_kept": 62.7
+    }
+  },
   "holdout": {
     "edges": {
       "n_eval": 800,
@@ -72,25 +229,77 @@
       "test_days": "in-sample"
     },
     "journeys": {
-      "test": "journey-replay",
-      "n_samples": 72,
-      "n_scored": 36,
-      "no_option": 0,
-      "no_match": 36,
-      "ride_mae_min": 1.22,
-      "ride_bias_min": -0.88,
-      "within_5min": 0.944,
-      "within_10min": 1.0,
-      "coverage": 0.5,
-      "days": [
-        "2026_10_28",
-        "2026_10_29",
-        "2026_10_30"
-      ]
+      "test": "journey-level holdout, train Oct 01-24, score Oct 25-31",
+      "n_journeys": 4178,
+      "mean_ride_min": 30.9,
+      "mean_pred_min": 31.8,
+      "mae_min": 4.6,
+      "bias_min": 0.81,
+      "within_5_min": 0.69,
+      "within_10_min": 0.905,
+      "band_coverage": 0.845,
+      "fallback_leg_share": 0.024,
+      "legs_per_journey": 18.1,
+      "by_hour_band": {
+        "0-5": {
+          "n": 234,
+          "mae_min": 5.12,
+          "mean_ride_min": 22.3
+        },
+        "11-16": {
+          "n": 1348,
+          "mae_min": 4.63,
+          "mean_ride_min": 30.6
+        },
+        "17-20": {
+          "n": 820,
+          "mae_min": 5.63,
+          "mean_ride_min": 34.5
+        },
+        "21-23": {
+          "n": 392,
+          "mae_min": 3.79,
+          "mean_ride_min": 24.3
+        },
+        "6-10": {
+          "n": 1384,
+          "mae_min": 4.11,
+          "mean_ride_min": 32.5
+        }
+      },
+      "by_length_band": {
+        "10-20": {
+          "n": 1602,
+          "mae_min": 4.14,
+          "mean_ride_min": 25.8
+        },
+        "21-40": {
+          "n": 1558,
+          "mae_min": 5.76,
+          "mean_ride_min": 48.7
+        },
+        "5-9": {
+          "n": 1018,
+          "mae_min": 3.55,
+          "mean_ride_min": 11.9
+        }
+      }
     },
     "pings_leave_one_day_out": {
       "test": "leave-one-day-out route x hour speeds",
       "days": [
+        "2026_10_01",
+        "2026_10_02",
+        "2026_10_03",
+        "2026_10_04",
+        "2026_10_05",
+        "2026_10_06",
+        "2026_10_07",
+        "2026_10_08",
+        "2026_10_09",
+        "2026_10_10",
+        "2026_10_11",
+        "2026_10_12",
         "2026_10_13",
         "2026_10_14",
         "2026_10_15",
@@ -111,21 +320,32 @@
         "2026_10_30",
         "2026_10_31"
       ],
-      "n_cells_evald": 502158,
-      "n_cells_dow_evald": 486452,
-      "mae_model_kmh": 1.92,
-      "mae_dow_model_kmh": 2.3,
-      "mae_city_baseline_kmh": 3.05,
-      "lift_vs_baseline": 37.0,
-      "lift_dow_vs_pooled": -19.4,
-      "mape_model_pct": 9.9,
-      "within_5kmh": 0.933,
+      "n_cells_evald": 801551,
+      "n_cells_dow_evald": 788384,
+      "n_cells_intersection": 788384,
+      "dow_subset": "intersection",
+      "mae_model_kmh": 1.96,
+      "mae_model_kmh_weighted": 1.45,
+      "mae_dow_model_kmh": 2.16,
+      "mae_dow_model_kmh_weighted": 1.54,
+      "mae_city_baseline_kmh": 3.07,
+      "mae_city_baseline_kmh_weighted": 2.44,
+      "mae_pooled_intersection_kmh": 1.94,
+      "mae_dow_intersection_kmh": 2.16,
+      "lift_vs_baseline": 36.1,
+      "lift_dow_vs_pooled": -11.4,
+      "lift_dow_vs_pooled_weighted": -6.1,
+      "lift_dow_vs_pooled_allrows": -9.8,
+      "mape_model_pct": 10.1,
+      "within_5kmh": 0.932,
       "within_10kmh": 0.992
     }
   },
   "findings": [
-    "2279 routes profiled across 19 days (38062 route x hour cells)",
-    "leave-one-day-out route x hour speeds: MAE 1.92 km/h vs city baseline 3.05 km/h (37.0% better), n=502,158 cells",
-    "journey replay: ride MAE 1.22 min, 100% within 10 min, coverage 50%"
+    "12 real October days cleaned: 218.7M of 347.9M pings kept (62.9%)",
+    "2303 routes profiled across 31 days (40211 route x hour cells)",
+    "leave-one-day-out route x hour speeds: MAE 1.96 km/h (1.45 km/h pair-weighted) vs city baseline 3.07 km/h (36.1% better), n=801,551 cells",
+    "day-of-week keying vs pooled: -11.4% on the shared subset (n=788,384 cells; -6.1% pair-weighted; -9.8% all-rows/asymmetric)",
+    "journey replay (strict Oct 01-24 train / Oct 25-31 score): ride MAE 4.6 min on mean ride 30.9 min, 90% within 10 min, n=4,178 journeys, band coverage 84%"
   ]
 }

@@ -27,7 +27,7 @@ export default async function run(page) {
     document.getElementById('results')?.innerText || 'EMPTY');
   out.steps.push('results text: ' + allResults.replace(/\n/g, ' | ').slice(0, 300));
 
-  await page.screenshot({ path: 'C:/Users/praya/delhi-pulse/docs/qa_edge_planner2.png' });
+  await page.screenshot({ path: 'docs/qa_edge_planner2.png' });
   out.steps.push('screenshot saved');
   return out;
 }

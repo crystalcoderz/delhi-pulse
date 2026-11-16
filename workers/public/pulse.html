@@ -1,90 +1,81 @@
-﻿<!doctype html>
+<!doctype html>
 <html lang="en">
 <head>
 <meta charset="utf-8"/>
 <meta name="viewport" content="width=device-width, initial-scale=1"/>
-<title>Delhi Pulse â€” city traffic from buses</title>
-<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Ccircle cx='8' cy='8' r='7' fill='%233ddc97'/%3E%3Ccircle cx='8' cy='8' r='3' fill='%2310121b'/%3E%3C/svg%3E"/>
-<script src="/vendor/maplibre-gl.js"></script>
-<link href="/vendor/maplibre-gl.css" rel="stylesheet"/>
-<style>
-  :root { --bg:#10121b; --acc:#3ddc97; --dim:#8b90a5; }
-  * { box-sizing:border-box; margin:0; }
-  body { background:var(--bg); font-family:'Segoe UI',system-ui,sans-serif; overflow:hidden; }
-  #map { position:absolute; inset:0; }
-  .hud { position:absolute; z-index:2; left:16px; top:16px; right:16px; pointer-events:none;
-         display:flex; flex-direction:column; gap:10px; align-items:flex-start; }
-  .card { background:rgba(16,18,27,.82); backdrop-filter:blur(10px); border:1px solid #262a3d;
-          border-radius:16px; padding:14px 18px; pointer-events:auto;
-          box-shadow:0 8px 32px rgba(0,0,0,.5); }
-  .brand { font-size:12px; letter-spacing:.28em; color:var(--acc); font-weight:700; }
-  h1 { color:#fff; font-size:22px; margin:4px 0 2px; }
-  .sub { color:var(--dim); font-size:12px; }
-  .timecard { display:flex; gap:12px; align-items:center; padding:10px 18px; }
-  .hh { font-size:26px; font-weight:800; color:#fff; min-width:64px; }
-  input[type=range] { width:min(46vw,300px); accent-color:var(--acc); }
-  select { background:#0d0f18; color:#e8eaf2; border:1px solid #262a3d; border-radius:8px;
-           padding:6px 10px; font-size:13px; }
-  .legend { display:flex; gap:8px; align-items:center; font-size:11px; color:var(--dim); }
-  .bar { width:120px; height:8px; border-radius:4px;
-         background:linear-gradient(90deg,#f06e28,#3cd2a0); }
-  .planner { position:absolute; z-index:2; right:16px; top:16px; }
-  .planner a { color:#fff; text-decoration:none; background:var(--acc); color:#06281a;
-               font-weight:700; font-size:13px; padding:10px 16px; border-radius:10px; }
-</style>
+<title>Delhi Pulse &mdash; city traffic from buses</title>
+<meta name="description" content="Delhi bus routes colored by the speeds buses actually recorded, hour by hour."/>
+<meta name="theme-color" content="#ffffff"/>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect width='16' height='16' rx='3' fill='%2314211b'/%3E%3Ccircle cx='8' cy='8' r='3.5' fill='%23ffb000'/%3E%3C/svg%3E"/>
+<link rel="preload" href="vendor/fonts/barlow-condensed-700.woff2" as="font" type="font/woff2" crossorigin/>
+<link rel="preconnect" href="https://maps.googleapis.com"/>
+<link rel="preconnect" href="https://maps.gstatic.com" crossorigin/>
+<link href="app.css" rel="stylesheet"/>
+<script src="shared.js" defer></script>
+<script src="pulse.js" defer></script>
 </head>
 <body>
-<div id="map"></div>
-<div class="hud">
-  <div class="card">
-    <div class="brand">DELHI PULSE</div>
-    <h1>7,000 buses. One living map.</h1>
-    <div class="sub">Route colors = observed bus speeds. Drag the hour â€” watch the city breathe.</div>
-  </div>
-  <div class="card timecard">
-    <div class="hh" id="hh">09:00</div>
-    <input id="hour" type="range" min="5" max="22" value="9"/>
-    <select id="day"><option value="">typical day</option></select>
-    <div class="legend"><span>slow</span><div class="bar"></div><span>fast</span></div>
-  </div>
-</div>
-<div class="planner"><a href="/">Plan a journey â†’</a></div>
-<script>
-const API = location.origin;
-const map = new maplibregl.Map({
-  container:'map', style:'https://basemaps.cartocdn.com/gl/dark-matter-gl-style/style.json',
-  center:[77.21,28.62], zoom:10 });
-window.map = map;
-let layerId_ = null, srcId_ = null;
+<a class="skip-link" href="#panel">Skip to map controls</a>
 
-async function refresh(){
-  const hour = document.getElementById('hour').value;
-  const day  = document.getElementById('day').value || '';
-  document.getElementById('hh').textContent = String(hour).padStart(2,'0') + ':00';
-  const fc = await fetch(`${API}/geo?hour=${hour}${day?`&day=${day}`:''}`)
-    .then(r=>r.json()).catch(()=>null);
-  if(!fc) return;
-  if(layerId_){ map.removeLayer(layerId_); map.removeSource(srcId_); }
-  srcId_ = 'pulse-src-' + Math.random().toString(36).slice(2);
-  layerId_ = 'pulse-lyr-' + Math.random().toString(36).slice(2);
-  map.addSource(srcId_, {type:'geojson', data:fc});
-  map.addLayer({id:layerId_, type:'line', source:srcId_,
-    layout:{'line-cap':'round','line-join':'round'},
-    paint:{'line-color':['get','color'],
-           'line-width':['interpolate',['linear'],['zoom'], 10, 2.6, 13, 7],
-           'line-blur':1, 'line-opacity':0.9}});
-}
+<header class="bar">
+  <a class="brand" href="./" aria-label="Delhi Pulse home"><span class="plate plate-brand">Delhi Pulse</span></a>
+  <nav class="views" aria-label="Views">
+    <a href="./">Planner</a>
+    <a href="pulse.html" aria-current="page">City Pulse</a>
+  </nav>
+</header>
 
-(async ()=>{
-  const days = await fetch(`${API}/days`).then(r=>r.json()).catch(()=>({days:[]}));
-  const sel = document.getElementById('day');
-  (days.days||[]).forEach(d=>{ const o=document.createElement('option'); o.value=d;
-    o.textContent = 'replay '+d.replace(/_/g,'-'); sel.appendChild(o); });
-})();
-document.getElementById('hour').addEventListener('input', ()=>refresh());
-document.getElementById('day').addEventListener('change', ()=>refresh());
-map.on('load', refresh);
-</script>
+<main class="shell">
+  <section class="panel" id="panel" aria-labelledby="pulseTitle" tabindex="-1">
+    <div class="pulse-intro">
+      <h1 class="pulse-title" id="pulseTitle">Delhi traffic, as its buses see it</h1>
+      <p class="lede">Every line is a bus route, colored by the speed buses actually recorded on it. Drag the hour and watch the city breathe.</p>
+    </div>
+
+    <div class="dial">
+      <div class="readout">
+        <p class="clock" id="hh">09:00</p>
+        <p class="city" id="cityReadout" hidden>
+          <span class="city-num" id="cityKmh"></span>
+          <span class="city-label">km/h citywide average</span>
+        </p>
+      </div>
+
+      <div class="curve" id="curve" hidden>
+        <div class="hours" id="hourBars" role="group" aria-label="Citywide average bus speed by hour. Select a bar to jump to that hour."></div>
+        <div class="hour-ticks" id="hourTicks" aria-hidden="true"></div>
+      </div>
+
+      <div class="field">
+        <label for="hour">Hour of day</label>
+        <input id="hour" type="range" min="5" max="22" step="1" value="9"/>
+      </div>
+
+      <div class="row">
+        <button type="button" class="ctl-btn" id="play" aria-pressed="false">Play the day</button>
+        <div class="field" id="dayField" hidden>
+          <label for="day">Day</label>
+          <select id="day">
+            <option value="">Typical day</option>
+          </select>
+        </div>
+      </div>
+    </div>
+
+    <div class="legend">
+      <p class="label">Observed bus speed</p>
+      <div class="ramp" aria-hidden="true"></div>
+      <div class="ramp-ticks"><span>8 km/h or slower</span><span>20</span><span>32 or faster</span></div>
+      <p class="hint">Slower routes are drawn thicker. Select a line to see its route number and speed.</p>
+    </div>
+
+    <p class="hint" id="geoStatus" role="status"></p>
+    <a class="plan-btn" href="./">Plan a journey</a>
+  </section>
+
+  <section class="map-wrap" aria-label="Map of Delhi bus routes colored by observed speed">
+    <div id="map"></div>
+  </section>
+</main>
 </body>
 </html>
-
