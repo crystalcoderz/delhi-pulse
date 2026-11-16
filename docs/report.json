@@ -1,5 +1,5 @@
 {
-  "generated_utc": "2026-11-15T19:11:41.625172",
+  "generated_utc": "2026-11-16T03:35:49.035312",
   "model": {
     "traversals": {
       "version": "v0-medians",
@@ -73,18 +73,19 @@
     },
     "journeys": {
       "test": "journey-replay",
-      "n_samples": 208,
-      "n_scored": 97,
+      "n_samples": 72,
+      "n_scored": 36,
       "no_option": 0,
-      "no_match": 111,
-      "ride_mae_min": 1.44,
-      "ride_bias_min": -0.96,
-      "within_5min": 0.948,
-      "within_10min": 0.979,
-      "coverage": 0.466,
+      "no_match": 36,
+      "ride_mae_min": 1.22,
+      "ride_bias_min": -0.88,
+      "within_5min": 0.944,
+      "within_10min": 1.0,
+      "coverage": 0.5,
       "days": [
-        "2026_10_13",
-        "2026_10_14"
+        "2026_10_28",
+        "2026_10_29",
+        "2026_10_30"
       ]
     },
     "pings_leave_one_day_out": {
@@ -125,6 +126,6 @@
   "findings": [
     "2279 routes profiled across 19 days (38062 route x hour cells)",
     "leave-one-day-out route x hour speeds: MAE 1.92 km/h vs city baseline 3.05 km/h (37.0% better), n=502,158 cells",
-    "journey replay: ride MAE 1.44 min, 97% within 10 min, coverage 46%"
+    "journey replay: ride MAE 1.22 min, 100% within 10 min, coverage 50%"
   ]
 }

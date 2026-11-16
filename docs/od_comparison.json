@@ -1,0 +1,202 @@
+[
+  {
+    "origin": "Kashmere Gate ISBT",
+    "destination": "Nehru Place",
+    "our_rush_min": 63.1,
+    "our_quiet_min": 68.7,
+    "rush_effect_min": -5.6,
+    "routes": "425UP",
+    "transfers": 0,
+    "google_maps_min": null
+  },
+  {
+    "origin": "Anand Vihar ISBT",
+    "destination": "Dhaula Kuan",
+    "our_rush_min": 56.4,
+    "our_quiet_min": 56.4,
+    "rush_effect_min": 0.0,
+    "routes": "0543A(NS)UP",
+    "transfers": 0,
+    "google_maps_min": null
+  },
+  {
+    "origin": "Connaught Place",
+    "destination": "Dwarka Sector 9",
+    "our_rush_min": 85.4,
+    "our_quiet_min": 87.9,
+    "rush_effect_min": -2.5,
+    "routes": "DS-4UP + 727STLUP",
+    "transfers": 1,
+    "google_maps_min": null
+  },
+  {
+    "origin": "AIIMS",
+    "destination": "Rohini West",
+    "our_rush_min": 82.3,
+    "our_quiet_min": 82.9,
+    "rush_effect_min": -0.6,
+    "routes": "0TMS(+)(NS)UP + 988UP",
+    "transfers": 1,
+    "google_maps_min": null
+  },
+  {
+    "origin": "New Delhi Railway Stn",
+    "destination": "Gurgaon Border",
+    "our_rush_min": 96.2,
+    "our_quiet_min": 101.6,
+    "rush_effect_min": -5.4,
+    "routes": "AIRPORT-EXP-04UP + Dhuala Kuan to Dharuhera UP",
+    "transfers": 1,
+    "google_maps_min": null
+  },
+  {
+    "origin": "AIIMS",
+    "destination": "Karol Bagh",
+    "our_rush_min": 69.1,
+    "our_quiet_min": 69.2,
+    "rush_effect_min": -0.1,
+    "routes": "725UP + 73UP",
+    "transfers": 1,
+    "google_maps_min": null
+  },
+  {
+    "origin": "IIT Delhi",
+    "destination": "India Gate",
+    "our_rush_min": 39.7,
+    "our_quiet_min": 46.7,
+    "rush_effect_min": -7.0,
+    "routes": "605DOWN",
+    "transfers": 0,
+    "google_maps_min": null
+  },
+  {
+    "origin": "Saket Mall",
+    "destination": "Chandni Chowk",
+    "our_rush_min": 71.9,
+    "our_quiet_min": 79.4,
+    "rush_effect_min": -7.5,
+    "routes": "512DOWN + 605DOWN",
+    "transfers": 1,
+    "google_maps_min": null
+  },
+  {
+    "origin": "Vasant Kunj",
+    "destination": "Mayur Vihar",
+    "our_rush_min": 77.6,
+    "our_quiet_min": 99.0,
+    "rush_effect_min": -21.4,
+    "routes": "DAF-21UP + U-SPL-20DOWN",
+    "transfers": 1,
+    "google_maps_min": null
+  },
+  {
+    "origin": "Jnu",
+    "destination": "Noida Sector 18",
+    "our_rush_min": 72.5,
+    "our_quiet_min": 83.6,
+    "rush_effect_min": -11.1,
+    "routes": "764UP + 493UP",
+    "transfers": 1,
+    "google_maps_min": null
+  },
+  {
+    "origin": "Utam Nagar",
+    "destination": "Anand Vihar",
+    "our_rush_min": 106.3,
+    "our_quiet_min": 106.7,
+    "rush_effect_min": -0.4,
+    "routes": "818DOWN + OMS(+)UP",
+    "transfers": 1,
+    "google_maps_min": null
+  },
+  {
+    "origin": "Karol Bagh",
+    "destination": "Noida City Centre",
+    "our_rush_min": 95.0,
+    "our_quiet_min": 93.0,
+    "rush_effect_min": 2.0,
+    "routes": "73DOWN + 347AUP",
+    "transfers": 1,
+    "google_maps_min": null
+  },
+  {
+    "origin": "Mehrauli",
+    "destination": "Shivaji Stadium",
+    "our_rush_min": 49.5,
+    "our_quiet_min": 59.5,
+    "rush_effect_min": -10.0,
+    "routes": "U-SPL-05DOWN + 440DOWN",
+    "transfers": 1,
+    "google_maps_min": null
+  },
+  {
+    "origin": "Rohini West",
+    "destination": "Kashmere Gate",
+    "our_rush_min": 62.3,
+    "our_quiet_min": 59.1,
+    "rush_effect_min": 3.2,
+    "routes": "140DOWN + 0118EXT(NS)DOWN",
+    "transfers": 1,
+    "google_maps_min": null
+  },
+  {
+    "origin": "Dwarka Sec 10",
+    "destination": "Connaught Place",
+    "our_rush_min": 91.4,
+    "our_quiet_min": 90.1,
+    "rush_effect_min": 1.3,
+    "routes": "783DOWN + 0740(NS)DOWN",
+    "transfers": 1,
+    "google_maps_min": null
+  },
+  {
+    "origin": "New Delhi Rly",
+    "destination": "Nizamuddin Dargah",
+    "our_rush_min": 39.8,
+    "our_quiet_min": 39.7,
+    "rush_effect_min": 0.1,
+    "routes": "CBD2(+)UP",
+    "transfers": 0,
+    "google_maps_min": null
+  },
+  {
+    "origin": "Sarojini Nagar",
+    "destination": "India Habitat Centre",
+    "our_rush_min": 21.3,
+    "our_quiet_min": 24.4,
+    "rush_effect_min": -3.1,
+    "routes": "336DOWN",
+    "transfers": 0,
+    "google_maps_min": null
+  },
+  {
+    "origin": "Lajpat Nagar",
+    "destination": "Janakpuri",
+    "our_rush_min": 75.8,
+    "our_quiet_min": 79.1,
+    "rush_effect_min": -3.3,
+    "routes": "763DOWN",
+    "transfers": 0,
+    "google_maps_min": null
+  },
+  {
+    "origin": "Kalkaji Mandir",
+    "destination": "Karol Bagh",
+    "our_rush_min": 97.0,
+    "our_quiet_min": 87.8,
+    "rush_effect_min": 9.2,
+    "routes": "D-042DOWN + 47ADOWN",
+    "transfers": 1,
+    "google_maps_min": null
+  },
+  {
+    "origin": "Nehru Place",
+    "destination": "Vasant Vihar",
+    "our_rush_min": 56.8,
+    "our_quiet_min": 52.5,
+    "rush_effect_min": 4.3,
+    "routes": "442DOWN + 623UP",
+    "transfers": 1,
+    "google_maps_min": null
+  }
+]

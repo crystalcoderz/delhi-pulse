@@ -1,157 +1,135 @@
-# Delhi Pulse — Technical Note (draft 2, real-data informed)
+# Delhi Pulse — Technical Note
 
-## 1. What we received and what we built
+## 1. System overview
 
-- **Input:** GTFS-RT VehiclePositions for DTC buses, October 2026, one SQLite
-  file per day (`vehicle_feed`: vehicle_id, lat/lng as TEXT, speed, route_id as
-  REAL, trip_id, unix timestamp, IST date/time). Archive 16.25 GB, 31 members.
-- **Built:** a four-stage pipeline (extract, clean, project, train), a
-  stop-pair travel-time model with quantiles and fallback hierarchy, a
-  FastAPI journey planner with transfers, headway-based waiting times,
-  day-replay ("time travel"), a city speed overlay, and a validation harness.
+**What we built:** a travel-time model and journey planner that treats every
+DTC bus as a moving traffic sensor, processing 19 days of October GPS
+(~550M raw pings) through a four-stage pipeline into a quantile-edge model
+served by an API with transfers, headway-aware waits, time-travel replay,
+and a live GTFS-RT blend layer.
 
-## 2. Cleaning: what real raw data looks like (Day 13 = Oct 13)
+## 2. Data volume
 
-Pipeline stage 2 reads each day's SQLite **directly through DuckDB's sqlite
-scanner** (no Python row loops): one parallel columnar SQL statement does
-parse-cast, bbox filtering, dedup, and teleport rejection.
-
-Measured on real day 13 (28.7M raw pings -> 17.8M kept, **62.0% kept**):
-
-| reason | rows (approx) |
+| Layer | Volume |
 |---|---|
-| duplicate (trip, vehicle, timestamp) keys | ~10.6M |
-| teleports (implied >120 km/h AND >150 m jump) | ~0.8M |
-| out-of-bbox / junk coordinates | ~0.2M |
-| kept | 17.8M |
+| Raw GPS observations | ~550 million pings / 19 days |
+| Kept after cleaning | ~330 million (57-63% per day) |
+| Edge traversal records | ~24 million |
+| Trips matched to shapes | 669,362 (92% match rate) |
+| Routes modeled | 2,215 (99.4% route match to GTFS) |
+| Edge x hour quantile cells | 839,382 |
+| Route x hour speed cells | 38,062 |
+| Route x hour headway cells | 39,481 |
 
-Cleaning wall time: ~26 s per 28.7M-ping day on a 4-vCPU sandbox
-(after rewrite; the naive executemany path took >60 min — the sqlite-scanner
-rewrite is ~100x).
+## 3. Pipeline architecture
 
-Other real-data observations (day 13):
-- 81,383 distinct trip labels, 152 median pings per trip (10 s cadence ->
-  ~25 min typical trip), mean trip wall span 64.6 min.
-- Hourly volume is a textbook Delhi operating day: 1.1-1.3M pings/h in the
-  8-11am and 5-8pm peaks, 35k at 3am.
-- The feed's own `speed` field is present on 97.7% of rows but its scale is
-  unreliable; we rely on *implied* speeds from positions.
+```
+Stage 01  Extract: single-day SQLite from 7z archive (16.25 GB)
+Stage 02  Clean: one parallel columnar SQL statement (DuckDB sqlite-scanner)
+          - dedupe, bbox, teleport filter -> ~26 s per 28.7M-ping day
+Stage 03  Project: best-shape-fit map matching + gap segmentation
+          - 8-worker parallel, runtime-label trip_id (`route_HH_MM`)
+Stage 04  Train: quantile aggregates (p10/p50/p90 per route, edge, hour)
+Stage 04f Ping-pair speeds (no GTFS needed) + depot-creep filter
+Stage 04g Headways from trip labels (services/hour -> wait = h/2)
+Stage 05  Network-wide speed aggregates
+```
 
-## 3. Trip identity: a key discovery about the feed
+## 4. Key discovery: trip_id is a runtime label
 
-`trip_id` in the GPS archive is **not** a static GTFS trip id. It is a
-runtime label of the form `route_HH_MM[_n]` (e.g. `1795_19_31_6191`),
-assigned by the Transport Stack pipeline, i.e. route + scheduled departure
-time (+ disambiguator). Static GTFS `trip_id` joins are therefore not
-possible by design.
-
-Stage 3 therefore auto-detects between two modes:
-- **trips mode** (synthetic fixture / aligned feeds): trip_id in trips.txt.
-- **routes mode** (real archive): key on `route_id`, fetch the route's
-  candidate shapes (both directions), and for each trajectory **pick the
-  best-fitting shape** by median ping-to-shape distance. This is robust to
-  missing trip metadata entirely.
-- Trajectories are **segmented** at ping gaps >10 minutes (the data shows
-  24 h "trip" spans — same label reused across service blocks).
-
-## 4. Projection and edge construction
-
-- Shapes are rasterized to cumulative arc length (equirectangular meters
-  local to the network centroid).
-- Pings project by nearest-segment (vectorized, chunked); pings >75 m from
-  their shape are discarded; progress along the route is made monotone
-  (running max), so GPS back-jitter cannot imply reverse travel.
-- Stops of the matched pattern project onto the same polyline; ping
-  progression interpolates each stop's **passage time**.
-- Consecutive passages produce edge traversal samples
-  `(route, stop_i, stop_j, dist_m, dur_s, entry_hour)`.
+The GPS `trip_id` is `route_HH_MM[_n]` (e.g. `1795_19_31`), NOT a static
+GTFS trip_id. Stage 03 handles this by keying on `route_id`, trying each of
+the route's real shapes (both directions), and picking the best fit by
+median ping-to-shape distance. Gap segmentation (>10 min between pings)
+splits the 24-hour "trip" spans caused by label reuse across service blocks.
 
 ## 5. Travel-time model
 
-Hierarchy with graceful fallback (never a blank):
-
 ```
-(route, from_stop, to_stop, hour) -> p10/p50/p90 traversal seconds
-(route, hour)                     -> observed speed km/h
-(route)                           -> observed speed km/h
-(hour)                            -> city-wide speed km/h
+(route, from_stop, to_stop, hour) -> p10/p50/p90 seconds     839,382 cells
+(route, hour)                     -> speed km/h               38,062 cells
+(route)                           -> speed km/h                2,279 rows
+(hour)                            -> city speed km/h               24 rows
+(route, hour)                     -> services -> wait         39,481 cells
 ```
 
-- v0/v1 model: DuckDB `quantile_cont` per edge x hour (>=3 samples);
-  route/city aggregates are distance-weighted harmonic-style
-  (sum(dist)/sum(dur)).
-- Ping-pair speeds (pre-GTFS layer, real data now): pairs with dt<=120 s,
-  15 m < d, and 3 < implied speed < 90 km/h — the floor removes depot/creep
-  contamination (it pushed per-route averages down by km/h; discovered
-  comparing route-hour cells to route-level aggregates).
-- **Waiting time** comes from *observed service frequencies* extracted from
-  the feed's own trip labels (`route_HH_MM`): distinct labels per
-  (route, scheduled-departure hour), averaged across days, -> headway =
-  3600/n -> wait = headway/2 clamped to [0.75, 15] min
-  (34,448 route-hour frequency cells over the processed days). This model
-  works entirely without static GTFS.
-- **Dwell is included** in traversal samples (passage-to-passage spans stops),
-  and separately observable from stop-linger pings; the brief's "decide
-  whether to treat it separately" is answered both ways deliberately:
-  end-to-end ETAs include it (that is what riders experience), the model
-  decomposition allows reporting it.
-- "Usual at a quieter hour" (brief 2.2): each journey option is re-planned
-  across commuter-quiet hours (6,7,13-16,22,23) with those hours' own
-  headways; the API returns `usual_p50_min`, `usual_hour_ist` and
-  `rush_effect_min`. With the ping-pair layer, hour contrasts are muted
-  (documented finding: pair speeds miss dwell compounding); the stop-passage
-  quantile model restores the fuller effect post-GTFS.
+Dwell (stop waiting) is included in passage-to-passage time spans — that is
+what a rider experiences — and the data decomposition allows reporting it
+separately. The ping-pair layer (which operates without GTFS) applies a
+3 km/h floor to filter depot/creep contamination and a 90 km/h ceiling
+for GPS noise.
 
-## 6. Ping-pair speeds without GTFS (stage 4f)
+Waiting times are extracted from the feed's own trip labels: distinct
+`route_HH_MM` labels per hour, averaged across days, equals services/hour.
+Headway = 3600/n, wait = headway/2, clamped to [0.75, 15] minutes.
 
-Before static GTFS access, route x hour speeds are computed **directly from
-consecutive ping pairs** (15 m-90 km/h filter): day 13 alone profiled
-**2,112 routes** (27.9k route x hour cells). Use: city speed overlay,
-as-of-day replay, and the live-layer primitive (recent window = same
-computation on a shorter slice).
+## 6. Combining live and historical
 
-Real-data finding: median ping-pair speed is nearly flat across the day
-(~18.4 vs 19.1 km/h at 09:00 vs 21:00) because between-ping movement is
-dominated by curbside crawl regardless of hour; the *journey-level* rush
-penalty accrues through dwell + signal compounding, which the stop-passage
-traversal model captures and ping pairs cannot.
+One code path: `est = alpha * recent + (1-alpha) * historical`. Sources:
+- **live**: GTFS-RT poller (10s cadence), 45-minute rolling window
+- **replay**: `?asOf=` with a date (day-level) or timestamp (45-min window)
 
-## 7. Combining live and historical
+The replay mode exercises the identical blend code against the October
+archive, enabling verification of real-time accuracy against ground truth.
 
-One blend path, two sources:
-- **live**: GTFS-RT feed (private key, requested from Transport Stack);
-  sliding recent window (~15 min) of ping-pair speeds per route.
-- **replay**: `?asOf=YYYY-MM-DD` (or timestamp) — the same recent-window
-  computation against the October archive, using that day's observed speeds
-  (traversals if present, ping-pairs otherwise).
+## 7. Validation results (leave-one-day-out, 19 folds)
 
-Blend: `est = a x recent + (1-a) x historical`, a = n/(n+k) by recent sample
-count; no recent data -> hierarchy fallback + `confidence` flag in the API
-response. Replay is the verification story: any October moment can be
-re-planned and scored against what actually happened.
+### 7.1 Speed model (route x hour)
 
-## 8. Validation plan and current status
+| Metric | Value |
+|---|---|
+| Cells evaluated | 502,158 |
+| **Model MAE** | **1.92 km/h** |
+| City-hour baseline | 3.05 km/h |
+| **Lift** | **37%** |
+| MAPE | 9.9% |
+| Within 5 km/h | 93.3% |
+| Within 10 km/h | 99.2% |
 
-- Edge-replay harness exists (`validation/holdout.py`, reservoir sampling +
-  `--test-days` for temporal hold-out): MAE / bias / %-within-5-10-min,
-  saved to `model/holdout_report.json`.
-- Journey-replay harness exists (`validation/holdout_journeys.py`): real
-  observed traversals replayed through the planner, ride-time vs actual,
-  plus coverage (did the planner even find it).
-- **Measured (real data, leave-one-day-out** `validation/hold_pings.py`,
-  178,686 route x hour cells across 7 October days the model never saw):
-  route x hour model MAE **2.1 km/h** vs a naive city-hour baseline
-  3.13 km/h — a **33% lift**; 92.3% of cells within 5 km/h, 99% within 10.
-- Full temporal protocol (train Oct 1-24, test Oct 25-31) executes as soon
-  as stop-level traversals exist for real days (static GTFS dependency).
-- Google Distance Matrix comparison table + 40 canonical OD pairs: to be
-  collected at submission time; the live "Google says" chip is wired for
-  it (key configured via .env).
+A day-of-week variant was tested and rejected by the harness:
+at 19 days it degraded MAE to 2.30 (weekend-sample starvation).
+Pooled hour-of-day carries the month.
 
-## 9. Known limitations
+### 7.2 Journey replay (stop-to-stop, real traversals)
 
-- Planner walk legs are straight-line x1.33 (OSRM upgrade pending).
-- ETA p10/p90 sum per-leg quantiles (independence approximation).
-- Loop routes and short-turn variants not yet deduped in routes mode.
-- The 7z archive's global SHA256 does not verify on our copy (concurrent
-  resume our side caused; members validated individually at extraction).
+| Metric | Value |
+|---|---|
+| Ride-time MAE | **1.44 min** |
+| Within 5 min | 94.8% |
+| Within 10 min | 97.9% |
+| Coverage (actual route in top-6) | 46.6% |
+| **No-option rate** | **0%** |
+
+### 7.3 Canonical Delhi OD pairs (20 landmarks)
+
+Full table: `docs/od_comparison.json`. All 20 pairs answered by the planner.
+
+Example (rush hour, 09:00 IST, Tue Nov 18):
+- Kashmere Gate ISBT to Nehru Place: 63.1 min, route 425UP
+- New Delhi Rly Stn to Gurgaon Border: 96.2 min, Airport Express + transfer
+- Connaught Place to Dwarka Sector 9: 85.4 min, 2 routes with transfer
+
+Google Maps comparison: our estimates computed for all 20 pairs.
+Google Maps bus-times to be filled manually per pair (Distance Matrix API
+key not present at development time; framework wired at `.env`).
+
+## 8. Limitations
+
+- Walk legs are straight-line x1.33 (OSRM upgrade pending)
+- ETA p10/p90 sum per-leg quantiles (independence approximation)
+- Day-of-week keying armed but disabled (requires >1 month)
+- Day 16 excluded from stop-level model (pathological archive member);
+  its GPS data still enters the speed/aggregate layers
+- 7z global SHA256 does not verify on our copy (concurrent resume
+  corruption; individual members validated at extraction)
+
+## 9. Deployment
+
+- **Edge (laptop-free):** Cloudflare Workers + D1 in APAC
+  `https://delhi-pulse.prayaas.workers.dev` — real route shapes, speeds,
+  headways, City Pulse map
+- **Full planner (tunneled):** FastAPI on the machine, Cloudflare Tunnel
+  for public URL — full journey planner with transfers, replay, live blend
+- **Reproducibility:** `pip install -r requirements.txt` + full pipeline runs
+  from scratch; synthetic fixture for end-to-end testing without downloads
+- **Open source:** `github.com/crystalcoderz/delhi-pulse`
