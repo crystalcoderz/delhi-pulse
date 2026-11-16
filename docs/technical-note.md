@@ -92,13 +92,17 @@ Pooled hour-of-day carries the month.
 
 ### 7.2 Journey replay (stop-to-stop, real traversals)
 
-| Metric | Value |
-|---|---|
-| Ride-time MAE | **1.44 min** |
-| Within 5 min | 94.8% |
-| Within 10 min | 97.9% |
-| Coverage (actual route in top-6) | 46.6% |
-| **No-option rate** | **0%** |
+| Metric | Day 13 (365 samples) | Days 28-30 (72 samples) |
+|---|---|---|
+| Ride MAE | 1.66 min | 1.22 min |
+| Within 5 min | 93.3% | 94.4% |
+| Within 10 min | 98.1% | 100% |
+| Coverage (actual route in top-6) | 57% | 50% |
+| **No-option rate** | **0%** | **0%** |
+
+The 43-50% where the planner didn't reproduce the sampled route means
+it offered a *different* (typically faster or fewer-transfer) option —
+the planner always answers.
 
 ### 7.3 Canonical Delhi OD pairs (20 landmarks)
 
