@@ -380,6 +380,24 @@ def health():
     return dict(ok=True, patterns=len(PAT), edges=len(E50), routes=len(RS))
 
 
+@app.get("/stops/nearby")
+def stops_nearby(lat: float, lng: float, radius_m: float = 500):
+    """Find stops within a radius (default 500m) of a point."""
+    from math import cos, radians
+    r_lat = radians(lat)
+    d = np.sqrt(((_slng - lng) * 111320.0 * r_lat) ** 2 +
+                ((_slat - lat) * 110540.0) ** 2)
+    idx = np.argsort(d)[:8]
+    out = []
+    for i in idx:
+        if d[i] <= radius_m:
+            sid = stops.stop_id.iloc[i]
+            out.append(dict(stop_id=sid, name=stops.stop_name.iloc[i],
+                            lat=float(_slat[i]), lng=float(_slng[i]),
+                            distance_m=int(d[i])))
+    return out
+
+
 @app.get("/stops/search")
 def stops_search(q: str = Query(..., min_length=1), limit: int = 12):
     names = stops.stop_name.tolist()
