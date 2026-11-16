@@ -141,6 +141,36 @@ LegacyApiNotActivatedMapError). So the reproducible, audited comparison at
 scale is Google's traffic-aware driving time; this limitation (and the
 walk-fallback probe) is recorded in `validation/gmaps_routes.py`.
 
+### 7.4 Google Maps Platform integration (product feature)
+
+The planner isn't just *validated* against Google — it now uses Google's
+advanced APIs as a first-class part of the product:
+
+* **Places search.** The planner UI searches any Delhi landmark, market,
+  mall or hospital, not just the 6,862 DTC stops. Typing shows two groups:
+  `🚏 Bus stops` (our GTFS index, instant) and `📍 Places · Google`
+  (Places API (New) autocomplete, scoped to a Delhi-NCR bounding box).
+  Choosing a place resolves it to coordinates via the Places details
+  endpoint and feeds it into the journey search.
+* **Live traffic comparison.** Every result set is annotated with Google's
+  traffic-aware driving time (Routes API v2, `TRAFFIC_AWARE`) for the same
+  departure — the planner displays "🚗 Google Maps drive: X min · 🚌 our
+  best bus: Y min · ratio". Verified end-to-end: Nehru Planetarium →
+  Select Citywalk Mall renders 61 min by bus vs 56 min by car (1.08×).
+* **Key security.** The Google key is stored as a Cloudflare Worker
+  *secret* (`GOOGLE_MAPS_KEY`) and is only used server-side inside the
+  Worker; the browser never sees it. All Google calls are proxied through
+  three documented endpoints: `/api/places/autocomplete`,
+  `/api/places/resolve`, `/api/gmaps-drive`.
+
+Two engineering notes for reproducibility: (1) Google's field masks must be
+delivered via the `$fields` **query parameter** through Cloudflare Workers —
+the `X-Goog-FieldMask` header is silently dropped by the Worker runtime for
+these endpoints, which Google surfaces as "FieldMask is a required
+parameter"; (2) the Routes API rejects `departureTime` values in the past
+(even seconds stale), so the proxy clamps out-of-window departures and lets
+Google fall back to live traffic.
+
 ## 8. Limitations
 
 - Walk legs are straight-line x1.33 (OSRM upgrade pending)

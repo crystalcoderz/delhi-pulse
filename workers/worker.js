@@ -9,9 +9,17 @@
  *   /api/journeys?from=&to=&depart=&max=   → full journey search
  *   /api/stops/nearby?lat=&lng=&radius=     → stops within radius
  *   /api/stops/search?q=                    → fuzzy stop search
+ *   /api/places/autocomplete?input=         → Google Places (New) typing
+ *                                             suggestions, Delhi-restricted
+ *   /api/places/resolve?place_id=           → place id → name + coords
+ *   /api/gmaps-drive?from=&to=&depart=      → Google Routes v2 traffic-aware
+ *                                             driving time (comparison)
  *   /api/pulse                               → city speed curve
  *   /api/geo?hour=&limit=                    → route shapes colored by speed
  *   /api/health                              → system status
+ *
+ * Google key lives as the Worker secret GOOGLE_MAPS_KEY and is never
+ * shipped to clients.
  *
  * Static assets serve: /index.html (planner UI), /model.json.gz
  */
@@ -77,6 +85,112 @@ export default {
         return j({ ok: true, stops: Object.keys(M.stops).length,
                    patterns: M.patterns.length,
                    routes: Object.keys(M.route_avg).length });
+      }
+
+      // ---- Google Maps Platform proxies (no model load needed) ----
+      // Key = env.GOOGLE_MAPS_KEY (Cloudflare secret). Never sent to clients.
+      const GKEY = env.GOOGLE_MAPS_KEY || null;
+      const gHead = (extra) => ({ "content-type": "application/json",
+                                  "x-goog-api-key": GKEY, ...extra });
+      // Delhi NCR bounding box used to scope every Places lookup
+      const DELHI_BOX = { rectangle: {
+        low: { latitude: 28.15, longitude: 76.60 },
+        high: { latitude: 29.00, longitude: 77.65 } } };
+
+      // typing suggestions for the planner search box
+      if (p === "/api/places/autocomplete" || p === "/places/autocomplete") {
+        const input = (url.searchParams.get("input")
+                     || url.searchParams.get("q") || "").slice(0, 120);
+        if (!input) return j({ suggestions: [] }, 400);
+        if (!GKEY) return j({ suggestions: [],
+                              note: "places search not configured" });
+        const r = await fetch(
+          "https://places.googleapis.com/v1/places:autocomplete"
+          + "?$fields=suggestions.placePrediction.placeId"
+          + ",suggestions.placePrediction.text"
+          + ",suggestions.placePrediction.types", {
+            method: "POST",
+            headers: gHead(),
+            body: JSON.stringify({ input, locationRestriction: DELHI_BOX,
+                                   languageCode: "en",
+                                   includedRegionCodes: ["in"] }),
+          });
+        if (!r.ok) return j({ suggestions: [], note: `google ${r.status}` }, 502);
+        const d = await r.json();
+        const sugg = (d.suggestions || [])
+          .map(s => { const pr = s.placePrediction || {};
+            return { id: pr.placeId, text: (pr.text || {}).text,
+                     types: (pr.types || []).slice(0, 3) }; })
+          .filter(x => x.id && x.text);
+        return j({ suggestions: sugg.slice(0, 6),
+                   source: "google-places-new" });
+      }
+
+      // place id → coordinates (for journey search after suggestion click)
+      if (p === "/api/places/resolve" || p === "/places/resolve") {
+        const pidRaw = url.searchParams.get("place_id") || "";
+        const pid = pidRaw.replace(/^places\//, "");
+        if (!/^[A-Za-z0-9_-]{10,200}$/.test(pid))
+          return j({ error: "valid place_id required" }, 400);
+        if (!GKEY) return j({ error: "places not configured" }, 503);
+        const r = await fetch(
+          `https://places.googleapis.com/v1/places/${encodeURIComponent(pid)}`
+          + "?$fields=id,location,displayName,formattedAddress,types", {
+            headers: gHead(),
+          });
+        if (!r.ok) return j({ error: `google ${r.status}` }, 502);
+        const d = await r.json();
+        const loc = d.location || {};
+        return j({ place_id: d.id || pid,
+                   name: (d.displayName || {}).text || "",
+                   address: d.formattedAddress || null,
+                   lat: loc.latitude ?? null, lng: loc.longitude ?? null,
+                   types: (d.types || []).slice(0, 3),
+                   source: "google-places-new" });
+      }
+
+      // live google traffic-aware DRIVING time for the UI comparison strip
+      if (p === "/api/gmaps-drive" || p === "/gmaps-drive") {
+        const from = url.searchParams.get("from") || "";
+        const to = url.searchParams.get("to") || "";
+        const departT = url.searchParams.get("depart") || "";
+        const m1 = from.match(/^(-?\d+\.?\d*),\s*(-?\d+\.?\d*)$/);
+        const m2 = to.match(/^(-?\d+\.?\d*),\s*(-?\d+\.?\d*)$/);
+        if (!m1 || !m2) return j({ error: "from,to must be lat,lng" }, 400);
+        if (!GKEY) return j({ drive_min: null, note: "not configured" });
+        const body = {
+          origin: { location: { latLng: {
+            latitude: parseFloat(m1[1]), longitude: parseFloat(m1[2]) } } },
+          destination: { location: { latLng: {
+            latitude: parseFloat(m2[1]), longitude: parseFloat(m2[2]) } } },
+          travelMode: "DRIVE",
+          routingPreference: "TRAFFIC_AWARE",
+        };
+        if (departT) {
+          // Google requires departureTime within [now, now + 7 days]; outside
+          // that window it 400s, so let it default to live traffic instead
+          const t = new Date(departT).getTime();
+          const now = Date.now();
+          if (t > now && t < now + 7 * 24 * 3600 * 1000)
+            body.departureTime = new Date(t).toISOString();
+        }
+        const r = await fetch(
+          "https://routes.googleapis.com/directions/v2:computeRoutes"
+          + "?$fields=routes.duration,routes.distanceMeters", {
+            method: "POST",
+            headers: gHead(),
+            body: JSON.stringify(body),
+          });
+        if (!r.ok)
+          return j({ drive_min: null, note: `google ${r.status}` });
+        const d = await r.json();
+        if (!d.routes || !d.routes.length) return j({ drive_min: null });
+        const dur = parseFloat(d.routes[0].duration);
+        return j({
+          drive_min: dur ? Math.round(dur / 60 * 10) / 10 : null,
+          drive_km: Math.round((d.routes[0].distanceMeters || 0) / 100) / 10,
+          source: "google-routes-v2-traffic-aware",
+        });
       }
 
       // ---- load model for all other endpoints ----
@@ -453,7 +567,10 @@ export default {
                    endpoints: ["/api/health", "/api/journeys?from=&to=",
                               "/api/stops/nearby?lat=&lng=",
                               "/api/stops/search?q=",
-                              "/api/pulse", "/api/lookup?route=&hour="],
+                              "/api/places/autocomplete?input=",
+                               "/api/places/resolve?place_id=",
+                               "/api/gmaps-drive?from=&to=&depart=",
+                               "/api/pulse", "/api/lookup?route=&hour="],
                    docs: "github.com/crystalcoderz/delhi-pulse" });
       }
 

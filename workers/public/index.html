@@ -57,6 +57,18 @@
   .sug-item:hover { background: var(--card); }
   .sug-item .nm { font-size: 13px; line-height: 1.3; }
   .sug-item .dst { font-size: 11px; color: var(--dim); white-space: nowrap; margin-left: 8px; }
+  .sug-heading { padding: 7px 14px 3px; font-size: 10px; font-weight: 700;
+                 letter-spacing: .12em; text-transform: uppercase; color: var(--dim); }
+  .sug-item.place-item .nm { color: #8ab4f8; }
+  .sug-item.place-item .dst { max-width: 110px; overflow: hidden;
+                              text-overflow: ellipsis; }
+  .gcompare { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap;
+              padding: 10px 14px; margin-bottom: 8px; border-radius: 12px;
+              border: 1px solid rgba(138,180,248,.25);
+              background: rgba(138,180,248,.07); font-size: 12.5px; }
+  .gcompare .glab { color: var(--dim); }
+  .gcompare b { color: #e8eaed; font-weight: 700; }
+  .gcompare .gratio { margin-left: auto; font-weight: 700; color: #8ab4f8; }
 
   .row { display: flex; gap: 8px; }
   .row .field { flex: 1; margin-bottom: 0; }
@@ -209,26 +221,68 @@ fetch(`${API}/status`).then(r=>r.json()).then(s=>{
   $('stats').innerHTML = `<b>${routes}</b> routes Â· <b>839k</b> quantile cells Â· <b>669k</b> trips observed${mode}`;
 }).catch(()=>{ $('netstats').textContent = 'bus traffic model for Delhi'; });
 
-// ---------- stop search ----------
+// ---------- search: DTC bus stops + Google Places (any Delhi landmark) ----------
 async function suggest(box, sugBox) {
   const q = box.value.trim();
   if (q.length < 2) { sugBox.style.display='none'; return; }
-  try {
-    const r = await fetch(`${API}/stops/search?q=${encodeURIComponent(q)}`).then(r=>r.json());
-    sugBox.innerHTML = '';
-    (r||[]).forEach(s=>{
+  const which = sugBox.id === 'fromSug' ? 'from' : 'to';
+
+  // stop search is instant + local; places autocomplete hits Google via our
+  // edge proxy (key stays server-side) once the query is long enough
+  const stopP = fetch(`${API}/stops/search?q=${encodeURIComponent(q)}`)
+    .then(r=>r.json()).catch(()=>[]);
+  const placeP = q.length >= 3
+    ? fetch(`${API}/places/autocomplete?input=${encodeURIComponent(q)}`)
+        .then(r=>r.json()).catch(()=>({ suggestions: [] }))
+    : Promise.resolve({ suggestions: [] });
+  const [stopHits, places] = await Promise.all([stopP, placeP]);
+  const placeHits = (places && places.suggestions) || [];
+
+  sugBox.innerHTML = '';
+  let any = false;
+
+  if ((stopHits||[]).length) {
+    const h = document.createElement('div'); h.className='sug-heading';
+    h.textContent = '🚏 Bus stops';
+    sugBox.appendChild(h); any = true;
+    stopHits.forEach(s=>{
       const d = document.createElement('div'); d.className='sug-item';
       d.innerHTML = `<span class="nm">${s.name}</span><span class="dst">${s.stop_id}</span>`;
       d.onclick = () => {
-        setPoint(sugBox.id === 'fromSug' ? 'from' : 'to', s.name,
-                 [s.lng, s.lat], s.stop_id);
+        setPoint(which, s.name, [s.lng, s.lat], s.stop_id);
         box.value = s.name;
         sugBox.style.display = 'none';
       };
       sugBox.appendChild(d);
     });
-    sugBox.style.display = r.length ? 'block' : 'none';
-  } catch(e) {}
+  }
+
+  if (placeHits.length) {
+    const h = document.createElement('div'); h.className='sug-heading';
+    h.textContent = '📍 Places · Google';
+    sugBox.appendChild(h); any = true;
+    placeHits.slice(0,6).forEach(ps=>{
+      const d = document.createElement('div'); d.className='sug-item place-item';
+      const types = (ps.types||[]).slice(0,3).join(' ');
+      d.innerHTML = `<span class="nm">${ps.text}</span><span class="dst">${types}</span>`;
+      d.onclick = async () => {
+        d.innerHTML = '<span class="nm">locating…</span>';
+        try {
+          const pr = await fetch(`${API}/places/resolve?place_id=${encodeURIComponent(ps.id)}`)
+            .then(r=>r.json());
+          if (pr.lat == null) throw new Error('no coords');
+          setPoint(which, pr.name || ps.text, [pr.lng, pr.lat], null);
+          box.value = pr.name || ps.text;
+          sugBox.style.display = 'none';
+        } catch(e) {
+          d.innerHTML = '<span class="nm">couldn\'t locate — tap map instead</span>';
+        }
+      };
+      sugBox.appendChild(d);
+    });
+  }
+
+  sugBox.style.display = any ? 'block' : 'none';
 }
 function debounce(fn,ms){ let t; return (...a)=>{ clearTimeout(t); t=setTimeout(()=>fn(...a),ms); }; }
 $('from').oninput = debounce(e=>suggest($('from'), $('fromSug')), 250);
@@ -276,7 +330,10 @@ $('plan').onclick = plan;
 $('clearAsof').onclick = () => { $('asof').value = '';
   $('clearAsof').classList.remove('visible'); plan(); };
 
+let planSeq = 0;   // guards the async google chip against faster re-plans
+
 async function plan() {
+  const seq = ++planSeq;
   clearRoute();
   markers.forEach(m => m.remove()); markers = [];
   if (picks.from) {
@@ -312,11 +369,35 @@ async function plan() {
       + `&max=4`;
     const res = await fetch(url).then(r => r.json());
     render(res);
+    fetchGoogleCompare(res, seq);
   } catch(e) {
     render({error: e.message, options: []});
   } finally {
     $('plan').disabled = false; $('plan').textContent = 'Find Journeys';
   }
+}
+
+// live Google traffic-aware driving time, shown beside our best bus option
+function fetchGoogleCompare(res, seq) {
+  if (seq !== planSeq || !(res.options || []).length) return;
+  const f = picks.from && picks.from.coord, t = picks.to && picks.to.coord;
+  if (!f || !t) return;                       // need real coords (picked or map)
+  const dep = $('when').value ? new Date($('when').value).toISOString() : '';
+  const q = `${API}/gmaps-drive?from=${f[1]},${f[0]}&to=${t[1]},${t[0]}`
+          + (dep ? `&depart=${encodeURIComponent(dep)}` : '');
+  fetch(q).then(r => r.json()).then(g => {
+    if (seq !== planSeq || g.drive_min == null) return;
+    const ours = res.options[0].total_min;
+    const ratio = (ours / g.drive_min).toFixed(2).replace(/\.?0+$/, '') || '1';
+    const chip = document.createElement('div');
+    chip.className = 'gcompare';
+    chip.innerHTML =
+      `<span class="glab">🚗 Google Maps drive, traffic:</span> <b>${Math.round(g.drive_min)} min</b>` +
+      `<span class="glab">· 🚌 our best bus:</span> <b>${Math.round(ours)} min</b>` +
+      `<span class="gratio">${ratio}×</span>` +
+      (g.drive_km ? `<span class="glab">${g.drive_km} km by road</span>` : '');
+    $('results').prepend(chip);
+  }).catch(() => {});
 }
 
 function render(res) {

@@ -77,20 +77,34 @@ python -m venv .venv
 
 ## API
 
+Deployed edge API: **https://delhi-pulse.prayaas.workers.dev** (same routes
+with or without the `/api` prefix).
+
 ```
 GET /journeys?from=<lat,lng>&to=<lat,lng>&depart=<ISO8601>
     → journey options with walk/wait/ride legs + p10/p50/p90 ETA bands
+    (1-transfer search included; stop:<id> also accepted for from/to)
     [&asOf=2026-10-13]   time-travel replay (whole-day)
-    [&asOf=2026-10-13T09:30:00+05:30]   replay (45-minute window)
     [&max=6]              max options returned
 
-GET /stops/search?q=<text>     fuzzy real-stop search
-GET /geo?hour=9               route geometries colored by observed speed
-GET /pulse                    real city speed curve
-GET /days                     available replay days
-GET /status                   system + live-layer + holdout readout
-GET /health                   lightweight health
+GET /stops/search?q=<text>          fuzzy real-stop search
+GET /stops/nearby?lat=&lng=         stops within radius with walk minutes
+GET /places/autocomplete?input=     Google Places (New) typing suggestions,
+                                    Delhi-NCR restricted, key kept server-side
+GET /places/resolve?place_id=      place id → name + coordinates
+GET /gmaps-drive?from=&to=&depart=  Google Routes v2 traffic-aware driving
+                                    time at the same departure (comparison)
+GET /geo?hour=9                     route geometries colored by observed speed
+GET /pulse                          real city speed curve
+GET /days                           available replay days (local API)
+GET /status                         system + live-layer + holdout readout
+GET /health                         lightweight health
 ```
+
+The planner UI searches **both** DTC stops and any Delhi landmark via Google
+Places, and shows a live "Google Maps: X min by car with traffic" comparison
+beside every result. The Google key is a Cloudflare Worker secret and never
+reaches the browser.
 
 ## Edge (Cloudflare Workers + D1)
 
