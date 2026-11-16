@@ -29,13 +29,13 @@ OD_PAIRS = [
     ("AIIMS", "Rohini West", 28.5672, 77.2100, 28.7315, 77.1213),
     ("New Delhi Railway Stn", "Gurgaon Border", 28.6428, 77.2211, 28.4815, 77.0900),
     ("AIIMS", "Karol Bagh", 28.5672, 77.2100, 28.6449, 77.1518),
-    ("IIT Delhi", "印度门e", 28.5474, 77.1943, 28.6129, 77.2295),  # India Gate
+    ("IIT Delhi", "India Gate", 28.5474, 77.1943, 28.6129, 77.2295),
     ("Saket Mall", "Chandni Chowk", 28.5285, 77.2075, 28.6506, 77.2303),
     ("Vasant Kunj", "Mayur Vihar", 28.5206, 77.1585, 28.6080, 77.2903),
-    ("Jnu", "Noida Sector 18", 28.5474, 77.1943, 28.5706, 77.3219),
-    ("Utam Nagar", "Anand Vihar", 28.6199, 77.0567, 28.6469, 77.3152),
+    ("JNU", "Noida Sector 18", 28.5474, 77.1943, 28.5706, 77.3219),
+    ("Uttam Nagar", "Anand Vihar", 28.6199, 77.0567, 28.6469, 77.3152),
     ("Karol Bagh", "Noida City Centre", 28.6449, 77.1518, 28.5747, 77.3525),
-    ("Wat. * Mehrauli", "Shivaji Stadium", 28.5178, 77.1827, 28.6300, 77.2220),
+    ("Mehrauli", "Shivaji Stadium", 28.5178, 77.1827, 28.6300, 77.2220),
     ("Rohini West", "Kashmere Gate", 28.7315, 77.1213, 28.6673, 77.2285),
     ("Dwarka Sec 10", "Connaught Place", 28.6130, 77.0470, 28.6316, 77.2167),
     ("New Delhi Rly", "Nizamuddin Dargah", 28.6428, 77.2211, 28.5906, 77.2445),
@@ -44,11 +44,6 @@ OD_PAIRS = [
     ("Kalkaji Mandir", "Karol Bagh", 28.5355, 77.2588, 28.6449, 77.1518),
     ("Nehru Place", "Vasant Vihar", 28.5494, 77.2514, 28.5580, 77.1600),
 ]
-
-# fix the the corrupted entries
-OD_PAIRS[6] = ("IIT Delhi", "India Gate", 28.5474, 77.1943, 28.6129, 77.2295)
-OD_PAIRS[12] = ("Mehrauli", "Shivaji Stadium", 28.5178, 77.1827, 28.6300, 77.2220)
-
 
 def query(base, olat, olng, dlat, dlng, depart_h):
     q = (f"/journeys?from={olat},{olng}&to={dlat},{dlng}"
