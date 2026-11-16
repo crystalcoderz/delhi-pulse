@@ -9,7 +9,7 @@ GTFS = DATA / "gtfs"        # static GTFS .txt files
 MODEL = ROOT / "model"      # trained lookup tables
 WEB = ROOT / "web"
 
-ARCHIVE = DATA / "delhi-dtc-bus-gtfs-rt-2026-10.7z"
+ARCHIVE = Path("C:/Users/praya/Downloads/delhi-dtc-bus-gtfs-rt-2026-10.7z")
 DATA_URL = "https://pub-091bd9e794bb4877b10b29e6df80f065.r2.dev/2026-10/delhi-dtc-bus-gtfs-rt-2026-10.7z"
 SUMS_URL = "https://pub-091bd9e794bb4877b10b29e6df80f065.r2.dev/2026-10/SHA256SUMS"
 
