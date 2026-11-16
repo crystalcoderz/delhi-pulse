@@ -71,6 +71,49 @@ function haversineM(lat1, lng1, lat2, lng2) {
   return R * 2 * Math.asin(Math.sqrt(a));
 }
 
+// ---- City Pulse geometry (per-isolate cache) ----
+// One line per route with observed speeds: its longest stop pattern, drawn
+// stop-to-stop (the edge model carries stop sequences, not GTFS shapes).
+// Geometry is pre-serialized once so each /geo response is string assembly.
+let GEO = null;
+
+function getRouteGeo(M) {
+  if (GEO) return GEO;
+  const longest = new Map();
+  for (const pat of M.patterns) {
+    if (M.route_avg[pat.r] == null) continue;
+    const cur = longest.get(pat.r);
+    if (!cur || pat.s.length > cur.s.length) longest.set(pat.r, pat);
+  }
+  const out = [];
+  for (const [route, pat] of longest) {
+    const pts = [];
+    let lenM = 0, prev = null;
+    for (const sid of pat.s) {
+      const s = M.stops[sid];
+      if (!s) continue;
+      if (prev) lenM += haversineM(prev[0], prev[1], s[0], s[1]);
+      pts.push("[" + s[1].toFixed(5) + "," + s[0].toFixed(5) + "]");
+      prev = s;
+    }
+    if (pts.length < 2) continue;
+    out.push({ route, name: M.route_names[route] || route, lenM,
+               geom: '"geometry":{"type":"LineString","coordinates":['
+                     + pts.join(",") + "]}" });
+  }
+  // longest first: a stable set of trunk routes, so only colors change by hour
+  out.sort((a, b) => b.lenM - a.lenM);
+  GEO = out;
+  return GEO;
+}
+
+// same ramp as api/app.py _ramp(): slow amber/red -> fast teal
+function speedColor(kmh, vmax = 36) {
+  const t = Math.max(0, Math.min(1, kmh / vmax));
+  const c = (a, b) => Math.round(a + (b - a) * t).toString(16).padStart(2, "0");
+  return "#" + c(240, 60) + c(110, 210) + c(40, 160);
+}
+
 // ---- export ----
 export default {
   async fetch(request, env) {
@@ -241,6 +284,40 @@ export default {
       if (p === "/api/pulse" || p === "/pulse") {
         const M2 = await getModel(env);
         return j({ city_hour: M2.city_hour, source: "real-ping-pairs @ edge" });
+      }
+
+      // ---- GEO: route lines colored by observed speed (City Pulse map) ----
+      // Same contract as the local API's /geo. Routes with a speed observed
+      // in this hour come first; the rest fall back to their all-day average
+      // and are marked source="route-avg" so the client can fade them.
+      if (p === "/api/geo" || p === "/geo") {
+        const hRaw = parseInt(url.searchParams.get("hour") ?? "9", 10);
+        const hour = Number.isFinite(hRaw) ? Math.min(23, Math.max(0, hRaw)) : 9;
+        const lRaw = parseInt(url.searchParams.get("limit") ?? "600", 10);
+        const limit = Number.isFinite(lRaw) ? Math.min(1500, Math.max(10, lRaw)) : 600;
+
+        const G = getRouteGeo(M);
+        const feats = [];
+        const add = (g, sp, source) => feats.push(
+          '{"type":"Feature","properties":' + JSON.stringify({
+            route: g.route, name: g.name,
+            speed_kmh: Math.round(sp * 10) / 10,
+            color: speedColor(sp), source }) + "," + g.geom + "}");
+        for (const g of G) {
+          if (feats.length >= limit) break;
+          const sp = M.speeds[g.route]?.[hour];
+          if (sp != null) add(g, sp, "route-hour");
+        }
+        for (const g of G) {
+          if (feats.length >= limit) break;
+          if (M.speeds[g.route]?.[hour] == null)
+            add(g, M.route_avg[g.route], "route-avg");
+        }
+        return new Response(
+          '{"type":"FeatureCollection","features":[' + feats.join(",")
+          + '],"hour":' + hour + ',"day":null}',
+          { headers: { ...JSONH, ...CORS,
+                       "cache-control": "public, max-age=3600" } });
       }
 
       // ---- JOURNEYS: full planner (inlined for same scoping pattern) ----
@@ -570,7 +647,8 @@ export default {
                               "/api/places/autocomplete?input=",
                                "/api/places/resolve?place_id=",
                                "/api/gmaps-drive?from=&to=&depart=",
-                               "/api/pulse", "/api/lookup?route=&hour="],
+                               "/api/pulse", "/api/geo?hour=&limit=",
+                               "/api/lookup?route=&hour="],
                    docs: "github.com/crystalcoderz/delhi-pulse" });
       }
 
