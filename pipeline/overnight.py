@@ -50,12 +50,30 @@ def main():
     todo = [d for d in todo if d not in EXCLUDE]
     log(f"days with pings: {len(days_have)}, traversals done: {len(days_done)}, "
         f"todo: {len(todo)} -> {todo} (excluded: {sorted(EXCLUDE & days_have)})")
-    # full-width projection: default cpu_count workers (override with
-    # DP_STREAM03_WORKERS). Memory is ~800 MB/worker, sized for the 64 GB VM.
-    w03 = int(os.environ.get("DP_STREAM03_WORKERS", os.cpu_count() or 8))
-    log(f"[03] workers per day: {w03}")
-    for d in todo:
-        run("pipeline/03_project_trips.py", "--day", d, "--workers", str(w03))
+    # full-width projection. Days run in DP_DAYS_PARALLEL streams (default 2)
+    # so the 12 cores stay busy through each day's serial load/write phases.
+    # Same computation as sequential — no effect on model quality.
+    w03 = int(os.environ.get(
+        "DP_STREAM03_WORKERS",
+        max(4, (os.cpu_count() or 12)
+             // max(1, int(os.environ.get("DP_DAYS_PARALLEL", "2"))))))
+    par = max(1, int(os.environ.get("DP_DAYS_PARALLEL", "2")))
+    log(f"[03] streams: {par}, workers/day: {w03}, todo: {len(todo)}")
+
+    import concurrent.futures as cf
+
+    def day_run(d):
+        ok = run("pipeline/03_project_trips.py", "--day", d,
+                 "--workers", str(w03))
+        return d, ok
+
+    if par > 1 and len(todo) > 1:
+        with cf.ThreadPoolExecutor(max_workers=par) as ex:
+            stage3_fail = [d for d, ok in ex.map(day_run, todo) if not ok]
+    else:
+        stage3_fail = [d for d in todo if not day_run(d)[1]]
+    if stage3_fail:
+        log(f"stage-03 FAILED days (skipped; rerunnable): {stage3_fail}")
 
     log("=== refresh chain ===")
     run("pipeline/04f_pings_speeds.py", "--all")

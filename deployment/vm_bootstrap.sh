@@ -36,10 +36,12 @@ LOG "python env ok"
 
 # 3) archive --------------------------------------------------------------------
 mkdir -p /opt/archive
-if [ ! -s "$DP_ARCHIVE" ]; then
-  LOG "downloading archive (15 GB) from R2 ..."
-  curl -sS --retry 5 -C - -o "$DP_ARCHIVE" \
-    https://pub-091bd9e794bb4877b10b29e6df80f065.r2.dev/2026-10/delhi-dtc-bus-gtfs-rt-2026-10.7z
+# resume-safe: always dial the download with -C -; instant if already complete
+if [ ! -s "$DP_ARCHIVE" ] || [ "$(stat -c%s "$DP_ARCHIVE" 2>/dev/null || echo 0)" -lt 15000000000 ]; then
+  LOG "downloading/resuming archive (~15 GB) from R2 ..."
+  curl -sS --retry 10 --retry-delay 2 -C - -o "$DP_ARCHIVE" \
+    https://pub-091bd9e794bb4877b10b29e6df80f065.r2.dev/2026-10/delhi-dtc-bus-gtfs-rt-2026-10.7z \
+    && LOG "archive transfer ok" || { LOG "archive download FAILED"; exit 1; }
 fi
 LOG "archive ready: $(du -h "$DP_ARCHIVE" | cut -f1)"
 # spot integrity test (single known-good member; the global SHA is absent)
