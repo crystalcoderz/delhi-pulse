@@ -223,19 +223,21 @@ def leg_seconds(route_id, a, b, dist_m, hour, day=None, win=None, dow=None):
     if day is not None:
         drh, dravg = day
         sp = (drh.get((route_id, hour)) or dravg.get(route_id)
-              or RHR.get((route_id, hour)) or RSR.get(route_id)
               or RH.get((route_id, hour)) or RS.get(route_id)
+              or RHR.get((route_id, hour)) or RSR.get(route_id)
               or CHR.get(hour) or CH.get(hour) or CH_DEFAULT)
         return dist_m * 3.6 / max(1.0, sp)
     if dow is not None and USE_DOW:
         sp = (DRHR.get((route_id, dow, hour))
-              or RHR.get((route_id, hour))
-              or RSR.get(route_id)
-              or RH.get((route_id, hour)) or RS.get(route_id)
+              or RH.get((route_id, hour))
+              or RS.get(route_id)
+              or RHR.get((route_id, hour)) or RSR.get(route_id)
               or CHR.get(hour) or CH.get(hour) or CH_DEFAULT)
         return dist_m * 3.6 / max(1.0, sp)
-    sp = (RHR.get((route_id, hour)) or RSR.get(route_id)
-          or RH.get((route_id, hour)) or RS.get(route_id)
+    # B2: traversal speeds (dwell-inclusive, along-route) BEFORE the
+    # moving-only ping-pair tables
+    sp = (RH.get((route_id, hour)) or RS.get(route_id)
+          or RHR.get((route_id, hour)) or RSR.get(route_id)
           or CHR.get(hour) or CH.get(hour) or CH_DEFAULT)
     return dist_m * 3.6 / max(1.0, sp)   # meters at km/h -> seconds
 

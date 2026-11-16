@@ -34,6 +34,9 @@ const CORS = {
 const j = (obj, status = 200) =>
   new Response(JSON.stringify(obj), { status, headers: { ...JSONH, ...CORS } });
 
+// per-isolate cache for billed Google drive comparisons (E2)
+const driveCache = new Map();
+
 // ---- model cache (per-isolate) ----
 let M = null; // model data
 
@@ -226,6 +229,12 @@ export default {
         const m2 = to.match(/^(-?\d+\.?\d*),\s*(-?\d+\.?\d*)$/);
         if (!m1 || !m2) return j({ error: "from,to must be lat,lng" }, 400);
         if (!GKEY) return j({ drive_min: null, note: "not configured" });
+        // E2: cache per (from, to, 15-min bucket) — repeated comparisons in
+        // one session should not re-bill the Google proxy
+        const bucket = Math.floor(Date.now() / 900000);
+        const ckey = from + "|" + to + "|" + bucket;
+        const cached = driveCache.get(ckey);
+        if (cached) return j(cached);
         const body = {
           origin: { location: { latLng: {
             latitude: parseFloat(m1[1]), longitude: parseFloat(m1[2]) } } },
@@ -257,11 +266,16 @@ export default {
         const d = await r.json();
         if (!d.routes || !d.routes.length) return j({ drive_min: null });
         const dur = parseFloat(d.routes[0].duration);
-        return j({
+        const out = {
           drive_min: dur ? Math.round(dur / 60 * 10) / 10 : null,
           drive_km: Math.round((d.routes[0].distanceMeters || 0) / 100) / 10,
           source: "google-routes-v2-traffic-aware",
-        });
+        };
+        if (out.drive_min != null) {          // store in the 15-min bucket cache
+          if (driveCache.size > 512) driveCache.clear();
+          driveCache.set(ckey, out);
+        }
+        return j(out);
       }
 
       // ---- load model for all other endpoints ----
@@ -401,6 +415,9 @@ export default {
         let depEpoch = Date.now() / 1000;
         if (departT) {
           let s = departT.trim();
+          // a raw '+' in a query string arrives as a space; the sign may be
+          // absent entirely ("...08:30:00 05:30") or kept ("...08:30:00 +05:30")
+          s = s.replace(/ (\d{2}:?\d{2})$/, "+$1");
           if (/\d{2}:\d{2}(:\d{2})? [+-]\d{2}:?\d{2}$/.test(s)) s = s.replace(" ", "+");
           else if (/^\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}(:\d{2})?$/.test(s)) s += "+05:30";
           const t = new Date(s).getTime();
@@ -447,6 +464,18 @@ export default {
         }
 
         // direct journey search
+        // ride-time helpers: dwelled traversal speeds x per-route detour
+        // factor (along-route vs chord calibration, B9)
+        const detourOf = (route) => M.detour?.[route] ?? 1.077;
+        const bandOf = (route, hour) => M.band?.[route]?.[hour] ?? [0.85, 1.35];
+        const usualWaitOf = (route, hour) => {
+          for (const dh of [0, -1, 1]) {
+            const h = ((hour + dh) % 24 + 24) % 24;
+            const w = M.headway[route]?.[h];
+            if (w != null) return Math.min(15, Math.max(0.75, w / 120));
+          }
+          return null;
+        };
         const options = [];
         const seen = new Set();
         for (const oa of oNear) {
@@ -476,7 +505,7 @@ export default {
                 const sp = M.speeds[route]?.[hour0]
                   ?? M.route_avg[route]
                   ?? M.city_hour[hour0] ?? 18;
-                const rideS = distM * 3.6 / sp;
+                const rideS = distM * detourOf(route) * 3.6 / sp;
                 // B4: a route with no observed headway in this hour (±1h
                 // grace for sparse rows) is not running — offer no bus
                 // rather than the old 5-minute default wait.
@@ -520,11 +549,32 @@ export default {
                       coords: [[da.lat, da.lng], [dest.lat, dest.lng]] },
                   ],
                   eta_p50_min: Math.round(total * 10) / 10,
-                  // D2: bands must cover the whole journey incl. the final walk
-                  eta_p10_min: Math.round((walkOMin + waitMin + walkDMin + rideS*0.85/60) * 10) / 10,
-                  eta_p90_min: Math.round((walkOMin + waitMin + walkDMin + rideS*1.35/60) * 10) / 10,
+                  // D2: bands cover the whole journey incl. final walk;
+                  // A3: ratios derive from the trained quantile cells
+                  eta_p10_min: Math.round((walkOMin + waitMin + walkDMin
+                    + rideS * bandOf(route, hour0)[0] / 60) * 10) / 10,
+                  eta_p90_min: Math.round((walkOMin + waitMin + walkDMin
+                    + rideS * bandOf(route, hour0)[1] / 60) * 10) / 10,
                   confidence: "edge-route-hour",
                 });
+                // A5: usual time at this route's quieter service hour
+                {
+                  const uh = M.usual_hour?.[route];
+                  if (uh != null) {
+                    const spU = M.speeds[route]?.[uh]
+                      ?? M.route_avg[route] ?? M.city_hour[uh] ?? 18;
+                    const rideU = distM * detourOf(route) * 3.6 / spU;
+                    const waitU = usualWaitOf(route, uh);
+                    if (waitU != null) {
+                      const up50 = walkOMin + waitU + rideU / 60 + walkDMin;
+                      options[options.length - 1].usual_p50_min =
+                        Math.round(up50 * 10) / 10;
+                      options[options.length - 1].usual_hour_ist = uh;
+                      options[options.length - 1].rush_effect_min =
+                        Math.round((total - up50) * 10) / 10;
+                    }
+                  }
+                }
                 if (options.length >= 30) break;
               }
               if (options.length >= 30) break;
@@ -611,14 +661,14 @@ export default {
                   const walkDMin = da.d * 1.3 / 80;
                   const waitA = waitOf(A.r, hour0);
                   if (waitA == null) continue;      // B4: A not running this hour
-                  const rideA = dA * 3.6 / speedOf(A.r, hour0) / 60;
+                  const rideA = dA * detourOf(A.r) * 3.6 / speedOf(A.r, hour0) / 60;
                   const thour = Math.floor(
                     (depEpoch + (walkOMin + waitA + rideA) * 60 + 19800)
                     / 3600 % 24);
                   const waitB = waitOf(B.r, thour);
                   if (waitB == null) continue;      // B4: B not running at transfer hour
                   const xferMin = 2 + waitB;         // 2-min transfer buffer
-                  const rideB = dB * 3.6 / speedOf(B.r, thour) / 60;
+                  const rideB = dB * detourOf(B.r) * 3.6 / speedOf(B.r, thour) / 60;
                   const total = walkOMin + waitA + rideA + xferMin
                               + rideB + walkDMin;
 
@@ -663,10 +713,36 @@ export default {
                         coords: [[da.lat, da.lng], [dest.lat, dest.lng]] },
                     ],
                     eta_p50_min: Math.round(total * 10) / 10,
-                    eta_p10_min: Math.round((total - 0.15 * rideMin) * 10) / 10,
-                    eta_p90_min: Math.round((total + 0.35 * rideMin) * 10) / 10,
+                    // A3: per-leg band ratios from the trained quantile cells
+                    eta_p10_min: Math.round((total
+                      - rideA * (1 - bandOf(A.r, hour0)[0])
+                      - rideB * (1 - bandOf(B.r, thour)[0])) * 10) / 10,
+                    eta_p90_min: Math.round((total
+                      + rideA * (bandOf(A.r, hour0)[1] - 1)
+                      + rideB * (bandOf(B.r, thour)[1] - 1)) * 10) / 10,
                     confidence: "edge-transfer-route-hour",
                   });
+                  // A5: usual time — both legs re-timed at their quieter hours
+                  {
+                    const uhA = M.usual_hour?.[A.r], uhB = M.usual_hour?.[B.r];
+                    if (uhA != null && uhB != null) {
+                      const wAU = usualWaitOf(A.r, uhA);
+                      const wBU = usualWaitOf(B.r, uhB);
+                      if (wAU != null && wBU != null) {
+                        const rAU = dA * detourOf(A.r) * 3.6
+                          / speedOf(A.r, uhA) / 60;
+                        const rBU = dB * detourOf(B.r) * 3.6
+                          / speedOf(B.r, uhB) / 60;
+                        const up50 = walkOMin + wAU + rAU + 2 + wBU
+                                   + rBU + walkDMin;
+                        const last = options[options.length - 1];
+                        last.usual_p50_min = Math.round(up50 * 10) / 10;
+                        last.usual_hour_ist = Math.min(uhA, uhB);
+                        last.rush_effect_min =
+                          Math.round((total - up50) * 10) / 10;
+                      }
+                    }
+                  }
                   if (options.length >= 60) break scan;
                 }
               }
