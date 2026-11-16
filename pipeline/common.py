@@ -40,3 +40,31 @@ def ensure_dirs():
 def ist_datetime_cols(col_ts: str = "ts_utc") -> str:
     """SQL expr: duckdb expression turning unix-seconds UTC into IST timestamp."""
     return f"(to_timestamp(({col_ts}::BIGINT + {IST_OFFSET_S})))"
+
+
+def hour_ist_expr(col_ts: str = "ts_utc") -> str:
+    """SQL: hour-of-day in IST for a unix-seconds column.
+
+    Pure integer arithmetic. The old form
+    ``hour(to_timestamp(ts + 19800))`` is session-timezone dependent:
+    to_timestamp returns TIMESTAMPTZ and hour() renders it in the session
+    timezone, so on an IST machine (Asia/Calcutta) the +19800 offset was
+    applied a second time and every hour bin landed 5.5 hours late (A1)."""
+    return f"((({col_ts}::BIGINT + {IST_OFFSET_S}) // 3600) % 24)"
+
+
+def dow_ist_expr(col_ts: str = "ts_utc") -> str:
+    """SQL: ISO day-of-week (Mon=1..Sun=7) in IST, timezone-independent.
+
+    1970-01-01 (epoch day 0) was a Thursday (ISO 4), hence the +3 offset."""
+    return f"(((({col_ts}::BIGINT + {IST_OFFSET_S}) // 86400 + 3) % 7) + 1)"
+
+
+def hour_ist(ts_utc: int) -> int:
+    """Python reference for hour_ist_expr (unit-tested against the SQL)."""
+    return int(int(ts_utc) + IST_OFFSET_S) // 3600 % 24
+
+
+def dow_ist(ts_utc: int) -> int:
+    """Python reference for dow_ist_expr."""
+    return (int(int(ts_utc) + IST_OFFSET_S) // 86400 + 3) % 7 + 1

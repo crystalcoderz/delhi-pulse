@@ -16,6 +16,7 @@ from pathlib import Path
 import duckdb
 
 from common import (ensure_dirs, RAW, CLEAN, BBOX, IST_OFFSET_S,
+                    hour_ist_expr, dow_ist_expr,
                     MAX_IMPLIED_KMH, JUMP_MIN_M)
 
 
@@ -78,8 +79,8 @@ def clean(day: str):
             SELECT c.trip_id, c.vehicle_id, c.route_id, c.lat, c.lng, c.speed,
                    c.ts_utc,
                    to_timestamp(c.ts_utc + {IST_OFFSET_S}) AS dt_ist,
-                   hour(to_timestamp(c.ts_utc + {IST_OFFSET_S})) AS hour_ist,
-                   isodow(to_timestamp(c.ts_utc + {IST_OFFSET_S})) AS dow_ist
+                   {hour_ist_expr("c.ts_utc")} AS hour_ist,
+                   {dow_ist_expr("c.ts_utc")} AS dow_ist
             FROM seq c
             WHERE (c.nts IS NULL OR c.nts <= c.ts_utc)          -- last row / dup ts
                OR (c.nts > c.ts_utc AND
