@@ -1,7 +1,7 @@
 (() => {
   'use strict';
 
-  const { API, COLORS, h, getJSON, createMap } = window.DelhiPulse;
+  const { API, COLORS, h, getJSON, createMap, REDUCED_MOTION } = window.DelhiPulse;
   const $ = id => document.getElementById(id);
   const enc = encodeURIComponent;
 
@@ -42,7 +42,9 @@
 
   function clockTime(iso) {
     const date = new Date(iso);
-    return Number.isNaN(date.getTime()) ? '' : date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    return Number.isNaN(date.getTime())
+      ? '' : date.toLocaleTimeString('en-IN',
+          { hour: '2-digit', minute: '2-digit', timeZone: 'Asia/Kolkata' }) + ' IST';
   }
 
   function dayLabel(isoDay) {
@@ -61,14 +63,19 @@
   }
 
   function nowLocalISO() {
-    const now = new Date();
-    now.setMinutes(now.getMinutes() - now.getTimezoneOffset());
-    return now.toISOString().slice(0, 16);
+    const parts = new Intl.DateTimeFormat('en-CA', {
+      timeZone: 'Asia/Kolkata', year: 'numeric', month: '2-digit',
+      day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false,
+    }).formatToParts(new Date()).reduce((a, p) => ((a[p.type] = p.value), a), {});
+    if (parts.hour === '24') parts.hour = '00';
+    return `${parts.year}-${parts.month}-${parts.day}T${parts.hour}:${parts.minute}`;
   }
 
   function departISO() {
-    const date = new Date($('when').value);
-    return Number.isNaN(date.getTime()) ? '' : date.toISOString();
+    // The datetime field is Delhi wall-clock; keep it in IST end-to-end so
+    // a judge in any timezone queries the hour they typed.
+    const v = $('when').value;
+    return !v ? '' : v + ':00+05:30';
   }
 
   function announce(text) {
@@ -285,6 +292,16 @@
   });
 
   // ---------- search: DTC stops + Google Places via the edge proxy ----------
+  // One Places session token per typing session: autocomplete + resolve share
+  // it, and hiding the page starts a fresh session instead of resurrecting an
+  // old billed one. Guarded, because randomUUID needs a secure context.
+  const newToken = () => (typeof crypto.randomUUID === 'function' ? crypto.randomUUID() : '');
+  let sessionToken = newToken();
+  const sessionHeaders = () => (sessionToken ? { headers: { 'X-Session-Token': sessionToken } } : {});
+  document.addEventListener('visibilitychange', () => {
+    if (document.hidden) sessionToken = newToken();
+  });
+
   function openList(combo) {
     combo.list.hidden = false;
     combo.input.setAttribute('aria-expanded', 'true');
@@ -354,7 +371,7 @@
           async () => {
             name.textContent = 'Locating\u2026';
             try {
-              const found = await fetch(`${API}/places/resolve?place_id=${enc(place.id)}`).then(r => r.json());
+              const found = await fetch(`${API}/places/resolve?place_id=${enc(place.id)}`, sessionHeaders()).then(r => r.json());
               if (found.lat == null || found.lng == null) throw new Error('no coordinates');
               setPoint(end, found.name || place.text, [found.lng, found.lat], null, { pan: true });
               afterChoose(end);
@@ -397,7 +414,7 @@
       update();
     });
     if (wantPlaces) {
-      getJSON(`/places/autocomplete?input=${enc(query)}`, null).then(res => {
+      getJSON(`/places/autocomplete?input=${enc(query)}`, null, sessionHeaders()).then(res => {
         placeHits = res && Array.isArray(res.suggestions) ? res.suggestions : [];
         pending--;
         update();
@@ -494,7 +511,12 @@
       const response = await fetch(url);
       result = await response.json().catch(() => ({}));
       if (!response.ok && !Array.isArray(result.options)) {
-        result = { options: [], note: typeof result.detail === 'string' ? result.detail : null, failed: true };
+        result = {
+          options: [],
+          note: [result.detail, result.error, result.hint]
+            .filter(x => typeof x === 'string' && x).join(' '),
+          failed: true,
+        };
       }
     } catch (err) {
       result = { options: [], note: 'Could not reach the planner. Check your connection and try again.' };
@@ -503,7 +525,11 @@
     // A newer search has started; it owns the button and the results now.
     if (seq !== planSeq) return;
     setBusy(false);
-    render(result);
+    try {
+      render(result);
+    } catch (err) {
+      console.error('render failed:', err);
+    }
     fetchDriveCompare(result, seq);
   }
 
@@ -533,7 +559,9 @@
     const items = [];
     for (const seg of segs) {
       const m = minutes(seg.min);
-      if (seg.kind === 'walk' && seg.access) {
+      if (seg.kind === 'walk' && seg.access && journey.route_name === 'Walk') {
+        items.push(['Walk the whole way to your destination']);
+      } else if (seg.kind === 'walk' && seg.access) {
         const stop = bold(journey.board_name || 'the stop');
         items.push(seg.min > 0 ? ['Walk ' + m + ' min to ', stop] : ['Start at ', stop]);
       } else if (seg.kind === 'walk') {
@@ -583,12 +611,16 @@
 
     let rush = null;
     const effect = Number(journey.rush_effect_min);
-    if (Number.isFinite(effect) && effect !== 0) {
+    if (Number.isFinite(effect) && Math.abs(effect) >= 1) {
+      const uh = Number(journey.usual_hour_ist);
+      const uhLabel = Number.isFinite(uh) && uh >= 0 && uh <= 23
+        ? `${String(uh).padStart(2, '0')}:00 IST` : 'the usual hour';
       const usual = journey.usual_p50_min != null && journey.usual_hour_ist != null
-        ? ` Usually ${Math.round(journey.usual_p50_min)} min around ${journey.usual_hour_ist}:00.` : '';
+        ? ` Usually about ${Math.round(journey.usual_p50_min)} min at ${uhLabel}.` : '';
+      const word = effect > 0 ? 'slower' : 'faster';
       rush = h('p', {
         class: 'rush ' + (effect > 0 ? 'rush-slower' : 'rush-faster'),
-        text: `${effect > 0 ? '+' : '\u2212'}${Math.abs(effect)} min compared with a quiet hour.${usual}`,
+        text: `${Math.round(Math.abs(effect))} min ${word} than the usual trip.${usual}`,
       });
     }
 
@@ -669,12 +701,30 @@
   // Live Google traffic-aware driving time, shown beside the fastest bus option.
   function fetchDriveCompare(result, seq) {
     const best = (result.options || [])[0];
-    const from = picks.from && picks.from.coord;
-    const to = picks.to && picks.to.coord;
-    if (!best || !from || !to) return;
+    if (!best) return;
+    let from = picks.from && picks.from.coord;
+    let to = picks.to && picks.to.coord;
+    if (!from || !to) {
+      // typed endpoints (no map coords): derive them from the best journey's
+      // own leg geometry so the strip still shows
+      const legs = Array.isArray(best.legs) ? best.legs : [];
+      const first = legs[0] || {};
+      const last = legs[legs.length - 1] || {};
+      const c0 = (first.coords || [])[0];
+      const cN = ((last.coords || [])[1]) || (last.coords || [])[0];
+      if (c0) from = [c0[1], c0[0]];
+      if (cN) to = [cN[1], cN[0]];
+    }
+    if (!from || !to) return;
     const depart = departISO();
+    // Optimistic chip while Google is asked: it yields to the real comparison
+    // when the answer lands, and disappears if it never does.
+    const waiting = h('p', { class: 'gcompare', text: 'Asking Google for the drive time\u2026' });
+    $('results').prepend(waiting);
+    setTimeout(() => waiting.remove(), 10000);
     getJSON(`/gmaps-drive?from=${from[1]},${from[0]}&to=${to[1]},${to[0]}` + (depart ? `&depart=${enc(depart)}` : ''), null)
       .then(drive => {
+        waiting.remove();
         if (seq !== planSeq || !drive || !(drive.drive_min > 0)) return;
         const ours = Number(best.total_min) || 0;
         $('results').prepend(h('p', { class: 'gcompare' },
@@ -775,14 +825,16 @@
     net.classList.toggle('is-live', live);
     if (status && status.routes) {
       const stats = $('stats');
-      stats.textContent = `${Number(status.routes).toLocaleString('en-IN')} routes \u00b7 839k quantile cells \u00b7 669k trips observed`;
+      const edges = status.edges ? `${Math.round(status.edges / 1000)}k` : null;
+      stats.textContent = `${Number(status.routes).toLocaleString('en-IN')} routes`
+        + (edges ? ` \u00b7 ${edges} quantile cells` : '')
+        + ' \u00b7 October measured speeds';
       stats.hidden = false;
     }
     if (status && Array.isArray(status.replay_days)) addReplayDays(status.replay_days);
   });
 
-  // Replay is offered only where recorded days exist (the local API; the edge has none).
-  getJSON('/days', null).then(res => {
-    if (res && Array.isArray(res.days)) addReplayDays(res.days);
-  });
+  // Replay days come from /status when the platform supports them; the days
+  // endpoint exists only on the local API, and probing it here logged a 404
+  // on every load.
 })();

@@ -1,0 +1,971 @@
+{
+  "meta": {
+    "generated_utc": "2026-11-16T17:37:09+00:00",
+    "script": "validation/pair_baselines.py",
+    "description": "Observed bus ride-time medians (stage-03 passages) and GTFS timetable minima for the 20 OD pairs. Both are origin-stop to destination-stop in-vehicle times: no access walk, no wait.",
+    "od_pairs": 20,
+    "dep_hours_ist": [
+      9
+    ],
+    "filters": {
+      "weekday_only": true,
+      "weekdays_ist": "Mon-Fri (dow 1-5)",
+      "observed_origin_passage_hour": "same IST hour as departure",
+      "observed_match": "same (day, trip_id, vehicle_id, route_id); first alighting after the boarding; stop_seq increasing; delta > 0; ride <= 120 min",
+      "observed_verification": "a ride is dropped if any passage gap > 1800 s occurs strictly between boarding and alighting (mid-ride layover / out-and-back label reuse)",
+      "scheduled_match": "same trip_id (=> same route); stop_sequence increasing; delta > 0; weekday service via calendar; origin departure within the IST hour",
+      "hour_bin": "integer arithmetic ((tsec+19800)//3600)%24"
+    },
+    "stop_mapping": {
+      "rule": "pair-aware: every GTFS stop within 1500 m of each landmark is enumerated as origin x destination combinations; the nearest combination with real service is used. Tiers: A >= 5 observed trips, B >= 1 observed, C scheduled only, D nearest regardless. Both numbers for a pair are computed at the same stop pair",
+      "tier_a_min_obs": 5,
+      "candidate_radius_m": 1500.0
+    },
+    "stats": {
+      "median": "quantile_cont (linear interpolation)",
+      "bootstrap_ci": "400 resamples of the median, percentile 2.5/97.5, fixed seed"
+    },
+    "top_route_min_n": 5,
+    "inputs": {
+      "passages_files": 30,
+      "weekdays_available": [
+        "2026-10-01",
+        "2026-10-02",
+        "2026-10-05",
+        "2026-10-06",
+        "2026-10-07",
+        "2026-10-08",
+        "2026-10-09",
+        "2026-10-12",
+        "2026-10-13",
+        "2026-10-14",
+        "2026-10-15",
+        "2026-10-19",
+        "2026-10-20",
+        "2026-10-21",
+        "2026-10-22",
+        "2026-10-23",
+        "2026-10-26",
+        "2026-10-27",
+        "2026-10-28",
+        "2026-10-29",
+        "2026-10-30"
+      ],
+      "note": "pipeline day 2026-10-16 has no passages by design; any other gap is a pipeline artifact"
+    }
+  },
+  "pairs": {
+    "Kashmere Gate ISBT -> Nehru Place": {
+      "origin_stop": {
+        "stop_id": "4109",
+        "stop_name": "ISBT Kashmere Gate Terminal",
+        "dist_m": 108.6
+      },
+      "destination_stop": {
+        "stop_id": "2559",
+        "stop_name": "Nehru Place",
+        "dist_m": 239.6
+      },
+      "dep_hours": {
+        "9": {
+          "observed_ride": {
+            "n": 39,
+            "p50_s": 3372.6,
+            "p10_s": 2806.7,
+            "p90_s": 3865.7,
+            "min_s": 2601.3,
+            "max_s": 5070.9,
+            "boot_ci95_s": [
+              3275.5,
+              3467.0
+            ],
+            "boot_iters": 400
+          },
+          "top_route": {
+            "route_id": "1920",
+            "route_code": "425UP",
+            "route_name": "ISBT Kashmere Gate Terminal to Hamdard Nagar / Sangam Vihar",
+            "n": 39,
+            "p50_s": 3372.6,
+            "share": 1.0
+          },
+          "scheduled": {
+            "n_trips": 6,
+            "min_s": 3070.0,
+            "median_s": 3070.0,
+            "fastest_route_id": "1920",
+            "fastest_route_code": "425UP"
+          },
+          "mapping": {
+            "pair_tier": "A",
+            "n_obs_at_pair": 41,
+            "n_combos_with_obs": 113,
+            "combos_evaluated": 4488
+          }
+        }
+      }
+    },
+    "Anand Vihar ISBT -> Dhaula Kuan": {
+      "origin_stop": {
+        "stop_id": "8256",
+        "stop_name": "Anand Vihar ISBT Terminal",
+        "dist_m": 52.2
+      },
+      "destination_stop": {
+        "stop_id": "5010",
+        "stop_name": "Golf Club",
+        "dist_m": 105.0
+      },
+      "dep_hours": {
+        "9": {
+          "observed_ride": {
+            "n": 31,
+            "p50_s": 5105.1,
+            "p10_s": 4464.5,
+            "p90_s": 5684.7,
+            "min_s": 3561.5,
+            "max_s": 6281.6,
+            "boot_ci95_s": [
+              4926.8,
+              5297.2
+            ],
+            "boot_iters": 400
+          },
+          "top_route": {
+            "route_id": "2213",
+            "route_code": "740EXTUP",
+            "route_name": "Anand Vihar ISBT Terminal to Uttam Nagar Terminal (In Gate)",
+            "n": 24,
+            "p50_s": 5214.5,
+            "share": 0.774
+          },
+          "scheduled": {
+            "n_trips": 7,
+            "min_s": 4143.0,
+            "median_s": 4191.0,
+            "fastest_route_id": "2213",
+            "fastest_route_code": "740EXTUP"
+          },
+          "mapping": {
+            "pair_tier": "A",
+            "n_obs_at_pair": 31,
+            "n_combos_with_obs": 71,
+            "combos_evaluated": 2520
+          }
+        }
+      }
+    },
+    "Connaught Place -> Dwarka Sector 9": {
+      "origin_stop": {
+        "stop_id": "342",
+        "stop_name": "Kasturba Gandhi Road Crossing",
+        "dist_m": 1350.6
+      },
+      "destination_stop": {
+        "stop_id": "8088",
+        "stop_name": "Kakrola More",
+        "dist_m": 438.8
+      },
+      "dep_hours": {
+        "9": {
+          "observed_ride": {
+            "n": 5,
+            "p50_s": 4624.8,
+            "p10_s": 3858.1,
+            "p90_s": 5674.4,
+            "min_s": 3765.4,
+            "max_s": 5738.6,
+            "boot_ci95_s": [
+              3997.1,
+              5738.6
+            ],
+            "boot_iters": 400
+          },
+          "top_route": {
+            "route_id": "805",
+            "route_code": "783UP",
+            "route_name": "Delhi Sachivalaya (Rajghat Power House) to Dhansa Stand / Dhansa Bus Stand Metro",
+            "n": 5,
+            "p50_s": 4624.8,
+            "share": 1.0
+          },
+          "scheduled": {
+            "n_trips": 1,
+            "min_s": 4508.0,
+            "median_s": 4508.0,
+            "fastest_route_id": "805",
+            "fastest_route_code": "783UP"
+          },
+          "mapping": {
+            "pair_tier": "A",
+            "n_obs_at_pair": 5,
+            "n_combos_with_obs": 22,
+            "combos_evaluated": 5170
+          }
+        }
+      }
+    },
+    "AIIMS -> Rohini West": {
+      "origin_stop": {
+        "stop_id": "3004",
+        "stop_name": "AIIMS / Safdurjung Hospital",
+        "dist_m": 201.6
+      },
+      "destination_stop": {
+        "stop_id": "492",
+        "stop_name": "Rohini Depot II",
+        "dist_m": 182.5
+      },
+      "dep_hours": {
+        "9": {
+          "observed_ride": {
+            "n": 0,
+            "p50_s": null
+          },
+          "top_route": null,
+          "scheduled": null,
+          "mapping": {
+            "pair_tier": "D",
+            "n_obs_at_pair": 0,
+            "n_combos_with_obs": 0,
+            "combos_evaluated": 4488
+          }
+        }
+      }
+    },
+    "New Delhi Railway Stn -> Gurgaon Border": {
+      "origin_stop": {
+        "stop_id": "7846",
+        "stop_name": "New Delhi Railway Station Gate 2",
+        "dist_m": 267.3
+      },
+      "destination_stop": {
+        "stop_id": "7009",
+        "stop_name": "Sikandarpur",
+        "dist_m": 237.9
+      },
+      "dep_hours": {
+        "9": {
+          "observed_ride": {
+            "n": 0,
+            "p50_s": null
+          },
+          "top_route": null,
+          "scheduled": null,
+          "mapping": {
+            "pair_tier": "D",
+            "n_obs_at_pair": 0,
+            "n_combos_with_obs": 0,
+            "combos_evaluated": 272
+          }
+        }
+      }
+    },
+    "AIIMS -> Karol Bagh": {
+      "origin_stop": {
+        "stop_id": "2997",
+        "stop_name": "Safdurjung Hospital / AIIMS",
+        "dist_m": 221.5
+      },
+      "destination_stop": {
+        "stop_id": "7851",
+        "stop_name": "Shadipur DTC Colony Metro Station",
+        "dist_m": 970.7
+      },
+      "dep_hours": {
+        "9": {
+          "observed_ride": {
+            "n": 20,
+            "p50_s": 2126.1,
+            "p10_s": 1909.6,
+            "p90_s": 2847.9,
+            "min_s": 1669.5,
+            "max_s": 3490.9,
+            "boot_ci95_s": [
+              2032.5,
+              2348.1
+            ],
+            "boot_iters": 400
+          },
+          "top_route": {
+            "route_id": "2827",
+            "route_code": "168UP",
+            "route_name": "Hauz Khass Terminal to Laxmi Bai College",
+            "n": 20,
+            "p50_s": 2126.1,
+            "share": 1.0
+          },
+          "scheduled": {
+            "n_trips": 1,
+            "min_s": 2503.0,
+            "median_s": 2503.0,
+            "fastest_route_id": "2827",
+            "fastest_route_code": "168UP"
+          },
+          "mapping": {
+            "pair_tier": "A",
+            "n_obs_at_pair": 20,
+            "n_combos_with_obs": 25,
+            "combos_evaluated": 2706
+          }
+        }
+      }
+    },
+    "IIT Delhi -> India Gate": {
+      "origin_stop": {
+        "stop_id": "2352",
+        "stop_name": "IIT Gate",
+        "dist_m": 757.2
+      },
+      "destination_stop": {
+        "stop_id": "1340",
+        "stop_name": "Baroda House",
+        "dist_m": 336.9
+      },
+      "dep_hours": {
+        "9": {
+          "observed_ride": {
+            "n": 64,
+            "p50_s": 1785.9,
+            "p10_s": 1470.0,
+            "p90_s": 2100.3,
+            "min_s": 1100.8,
+            "max_s": 2472.5,
+            "boot_ci95_s": [
+              1683.7,
+              1854.5
+            ],
+            "boot_iters": 400
+          },
+          "top_route": {
+            "route_id": "1995",
+            "route_code": "502DOWN",
+            "route_name": "Mehrauli Terminal to Kashmere Gate City Bus Terminal",
+            "n": 52,
+            "p50_s": 1764.5,
+            "share": 0.812
+          },
+          "scheduled": {
+            "n_trips": 9,
+            "min_s": 1737.0,
+            "median_s": 1737.0,
+            "fastest_route_id": "1995",
+            "fastest_route_code": "502DOWN"
+          },
+          "mapping": {
+            "pair_tier": "A",
+            "n_obs_at_pair": 64,
+            "n_combos_with_obs": 172,
+            "combos_evaluated": 4956
+          }
+        }
+      }
+    },
+    "Saket Mall -> Chandni Chowk": {
+      "origin_stop": {
+        "stop_id": "2905",
+        "stop_name": "Press Enclave",
+        "dist_m": 77.3
+      },
+      "destination_stop": {
+        "stop_id": "1573",
+        "stop_name": "PS Kamla Market",
+        "dist_m": 938.4
+      },
+      "dep_hours": {
+        "9": {
+          "observed_ride": {
+            "n": 18,
+            "p50_s": 3662.0,
+            "p10_s": 3104.3,
+            "p90_s": 4627.6,
+            "min_s": 2746.7,
+            "max_s": 4726.8,
+            "boot_ci95_s": [
+              3592.0,
+              3792.9
+            ],
+            "boot_iters": 400
+          },
+          "top_route": {
+            "route_id": "514",
+            "route_code": "456DOWN",
+            "route_name": "Ambedkar Nagar Depot to New Delhi Railway Station Gate 2",
+            "n": 18,
+            "p50_s": 3662.0,
+            "share": 1.0
+          },
+          "scheduled": {
+            "n_trips": 2,
+            "min_s": 3232.0,
+            "median_s": 3232.0,
+            "fastest_route_id": "514",
+            "fastest_route_code": "456DOWN"
+          },
+          "mapping": {
+            "pair_tier": "A",
+            "n_obs_at_pair": 18,
+            "n_combos_with_obs": 169,
+            "combos_evaluated": 3850
+          }
+        }
+      }
+    },
+    "Vasant Kunj -> Mayur Vihar": {
+      "origin_stop": {
+        "stop_id": "2498",
+        "stop_name": "VASANT KUNJ BUS STAND / Vasant Kunj sec B-1",
+        "dist_m": 244.7
+      },
+      "destination_stop": {
+        "stop_id": "2328",
+        "stop_name": "Pusta Crossing / Akshardham Temple",
+        "dist_m": 968.0
+      },
+      "dep_hours": {
+        "9": {
+          "observed_ride": {
+            "n": 9,
+            "p50_s": 5359.8,
+            "p10_s": 3280.9,
+            "p90_s": 6422.3,
+            "min_s": 3072.0,
+            "max_s": 6942.2,
+            "boot_ci95_s": [
+              4674.6,
+              6292.3
+            ],
+            "boot_iters": 400
+          },
+          "top_route": {
+            "route_id": "2044",
+            "route_code": "534ADOWN",
+            "route_name": "IGI Airport Terminal 2 (Air India Office) to Anand Vihar ISBT Main Road",
+            "n": 9,
+            "p50_s": 5359.8,
+            "share": 1.0
+          },
+          "scheduled": {
+            "n_trips": 1,
+            "min_s": 4466.0,
+            "median_s": 4466.0,
+            "fastest_route_id": "2044",
+            "fastest_route_code": "534ADOWN"
+          },
+          "mapping": {
+            "pair_tier": "A",
+            "n_obs_at_pair": 9,
+            "n_combos_with_obs": 48,
+            "combos_evaluated": 2880
+          }
+        }
+      }
+    },
+    "JNU -> Noida Sector 18": {
+      "origin_stop": {
+        "stop_id": "6472",
+        "stop_name": "Paschima Bad",
+        "dist_m": 244.9
+      },
+      "destination_stop": {
+        "stop_id": "5747",
+        "stop_name": "Wave Cinema",
+        "dist_m": 353.9
+      },
+      "dep_hours": {
+        "9": {
+          "observed_ride": {
+            "n": 0,
+            "p50_s": null
+          },
+          "top_route": null,
+          "scheduled": null,
+          "mapping": {
+            "pair_tier": "D",
+            "n_obs_at_pair": 0,
+            "n_combos_with_obs": 0,
+            "combos_evaluated": 1364
+          }
+        }
+      }
+    },
+    "Uttam Nagar -> Anand Vihar": {
+      "origin_stop": {
+        "stop_id": "7975",
+        "stop_name": "Uttam Nagar Terminal (Out Gate)",
+        "dist_m": 1121.8
+      },
+      "destination_stop": {
+        "stop_id": "8256",
+        "stop_name": "Anand Vihar ISBT Terminal",
+        "dist_m": 52.2
+      },
+      "dep_hours": {
+        "9": {
+          "observed_ride": {
+            "n": 6,
+            "p50_s": 6843.8,
+            "p10_s": 5812.2,
+            "p90_s": 7161.0,
+            "min_s": 5764.4,
+            "max_s": 7180.0,
+            "boot_ci95_s": [
+              5860.0,
+              7161.0
+            ],
+            "boot_iters": 400
+          },
+          "top_route": {
+            "route_id": "2212",
+            "route_code": "740EXTDOWN",
+            "route_name": "Uttam Nagar Terminal (Out Gate) to Anand Vihar ISBT Terminal",
+            "n": 6,
+            "p50_s": 6843.8,
+            "share": 1.0
+          },
+          "scheduled": {
+            "n_trips": 4,
+            "min_s": 6484.0,
+            "median_s": 6484.0,
+            "fastest_route_id": "2212",
+            "fastest_route_code": "740EXTDOWN"
+          },
+          "mapping": {
+            "pair_tier": "A",
+            "n_obs_at_pair": 6,
+            "n_combos_with_obs": 21,
+            "combos_evaluated": 1440
+          }
+        }
+      }
+    },
+    "Karol Bagh -> Noida City Centre": {
+      "origin_stop": {
+        "stop_id": "1435",
+        "stop_name": "Bentax",
+        "dist_m": 403.8
+      },
+      "destination_stop": {
+        "stop_id": "5801",
+        "stop_name": "Noida Degree College",
+        "dist_m": 220.1
+      },
+      "dep_hours": {
+        "9": {
+          "observed_ride": {
+            "n": 0,
+            "p50_s": null
+          },
+          "top_route": null,
+          "scheduled": null,
+          "mapping": {
+            "pair_tier": "D",
+            "n_obs_at_pair": 0,
+            "n_combos_with_obs": 0,
+            "combos_evaluated": 574
+          }
+        }
+      }
+    },
+    "Mehrauli -> Shivaji Stadium": {
+      "origin_stop": {
+        "stop_id": "7908",
+        "stop_name": "Mehrauli Terminal",
+        "dist_m": 392.4
+      },
+      "destination_stop": {
+        "stop_id": "6179",
+        "stop_name": "Janpath Market",
+        "dist_m": 244.4
+      },
+      "dep_hours": {
+        "9": {
+          "observed_ride": {
+            "n": 36,
+            "p50_s": 3696.0,
+            "p10_s": 3060.4,
+            "p90_s": 4566.1,
+            "min_s": 2140.0,
+            "max_s": 5206.4,
+            "boot_ci95_s": [
+              3430.4,
+              3953.8
+            ],
+            "boot_iters": 400
+          },
+          "top_route": {
+            "route_id": "1999",
+            "route_code": "505DOWN",
+            "route_name": "Mehrauli Terminal to Ajmeri Gate",
+            "n": 36,
+            "p50_s": 3696.0,
+            "share": 1.0
+          },
+          "scheduled": {
+            "n_trips": 3,
+            "min_s": 2600.0,
+            "median_s": 2600.0,
+            "fastest_route_id": "1999",
+            "fastest_route_code": "505DOWN"
+          },
+          "mapping": {
+            "pair_tier": "A",
+            "n_obs_at_pair": 45,
+            "n_combos_with_obs": 32,
+            "combos_evaluated": 3876
+          }
+        }
+      }
+    },
+    "Rohini West -> Kashmere Gate": {
+      "origin_stop": {
+        "stop_id": "442",
+        "stop_name": "Rohini Depot II",
+        "dist_m": 191.2
+      },
+      "destination_stop": {
+        "stop_id": "4821",
+        "stop_name": "ISBT Kashmere Gate (Lothian Road)",
+        "dist_m": 171.2
+      },
+      "dep_hours": {
+        "9": {
+          "observed_ride": {
+            "n": 19,
+            "p50_s": 4198.8,
+            "p10_s": 3287.7,
+            "p90_s": 5029.8,
+            "min_s": 3052.7,
+            "max_s": 6227.2,
+            "boot_ci95_s": [
+              3762.0,
+              4726.3
+            ],
+            "boot_iters": 400
+          },
+          "top_route": {
+            "route_id": "1515",
+            "route_code": "106DOWN",
+            "route_name": "Qutubgarh Village   (Terminal) to Old Delhi Railway Station (Fatehpuri)",
+            "n": 19,
+            "p50_s": 4198.8,
+            "share": 1.0
+          },
+          "scheduled": {
+            "n_trips": 9,
+            "min_s": 3124.0,
+            "median_s": 3124.0,
+            "fastest_route_id": "1515",
+            "fastest_route_code": "106DOWN"
+          },
+          "mapping": {
+            "pair_tier": "A",
+            "n_obs_at_pair": 19,
+            "n_combos_with_obs": 196,
+            "combos_evaluated": 4624
+          }
+        }
+      }
+    },
+    "Dwarka Sec 10 -> Connaught Place": {
+      "origin_stop": {
+        "stop_id": "3816",
+        "stop_name": "DPS Matiyala (Delhi Public School )",
+        "dist_m": 933.9
+      },
+      "destination_stop": {
+        "stop_id": "4975",
+        "stop_name": "Regal / Palika Kendra",
+        "dist_m": 329.9
+      },
+      "dep_hours": {
+        "9": {
+          "observed_ride": {
+            "n": 11,
+            "p50_s": 4261.5,
+            "p10_s": 3454.0,
+            "p90_s": 5144.5,
+            "min_s": 3337.5,
+            "max_s": 5463.0,
+            "boot_ci95_s": [
+              3909.1,
+              4954.1
+            ],
+            "boot_iters": 400
+          },
+          "top_route": {
+            "route_id": "1443",
+            "route_code": "RL-77BDOWN",
+            "route_name": "Dwarka More Metro Station (Terminal) to New Delhi Railway Station Gate 2",
+            "n": 7,
+            "p50_s": 4718.3,
+            "share": 0.636
+          },
+          "scheduled": {
+            "n_trips": 7,
+            "min_s": 4294.0,
+            "median_s": 4528.0,
+            "fastest_route_id": "1443",
+            "fastest_route_code": "RL-77BDOWN"
+          },
+          "mapping": {
+            "pair_tier": "A",
+            "n_obs_at_pair": 11,
+            "n_combos_with_obs": 81,
+            "combos_evaluated": 4620
+          }
+        }
+      }
+    },
+    "New Delhi Rly -> Nizamuddin Dargah": {
+      "origin_stop": {
+        "stop_id": "1624",
+        "stop_name": "New Delhi Railway Station Gate 1",
+        "dist_m": 277.2
+      },
+      "destination_stop": {
+        "stop_id": "1346",
+        "stop_name": "POLICE STATION NIZAMUDDIN (DARGAH)",
+        "dist_m": 110.3
+      },
+      "dep_hours": {
+        "9": {
+          "observed_ride": {
+            "n": 31,
+            "p50_s": 2193.0,
+            "p10_s": 1714.1,
+            "p90_s": 3013.2,
+            "min_s": 1547.9,
+            "max_s": 3170.5,
+            "boot_ci95_s": [
+              2023.1,
+              2418.8
+            ],
+            "boot_iters": 400
+          },
+          "top_route": {
+            "route_id": "1654",
+            "route_code": "181ADOWN",
+            "route_name": "E Block Jahangir Puri Terminal to Nizamuddin Railway Station",
+            "n": 15,
+            "p50_s": 2200.7,
+            "share": 0.484
+          },
+          "scheduled": {
+            "n_trips": 14,
+            "min_s": 1768.0,
+            "median_s": 2560.0,
+            "fastest_route_id": "1684",
+            "fastest_route_code": "19DOWN"
+          },
+          "mapping": {
+            "pair_tier": "A",
+            "n_obs_at_pair": 31,
+            "n_combos_with_obs": 211,
+            "combos_evaluated": 3468
+          }
+        }
+      }
+    },
+    "Sarojini Nagar -> India Habitat Centre": {
+      "origin_stop": {
+        "stop_id": "2424",
+        "stop_name": "Nauroji Nagar",
+        "dist_m": 316.7
+      },
+      "destination_stop": {
+        "stop_id": "2395",
+        "stop_name": "Lodhi Garden / Mousam Bhawan",
+        "dist_m": 209.2
+      },
+      "dep_hours": {
+        "9": {
+          "observed_ride": {
+            "n": 94,
+            "p50_s": 810.8,
+            "p10_s": 586.3,
+            "p90_s": 1058.8,
+            "min_s": 469.6,
+            "max_s": 1254.8,
+            "boot_ci95_s": [
+              763.9,
+              866.5
+            ],
+            "boot_iters": 400
+          },
+          "top_route": {
+            "route_id": "616",
+            "route_code": "588DOWN",
+            "route_name": "Uttam Nagar Terminal (Out Gate) to Sunehari Pulla Depot / Jawahar Lal Nehru Stadium Terminal",
+            "n": 29,
+            "p50_s": 852.5,
+            "share": 0.309
+          },
+          "scheduled": {
+            "n_trips": 11,
+            "min_s": 792.0,
+            "median_s": 793.0,
+            "fastest_route_id": "746",
+            "fastest_route_code": "745DOWN"
+          },
+          "mapping": {
+            "pair_tier": "A",
+            "n_obs_at_pair": 94,
+            "n_combos_with_obs": 361,
+            "combos_evaluated": 5226
+          }
+        }
+      }
+    },
+    "Lajpat Nagar -> Janakpuri": {
+      "origin_stop": {
+        "stop_id": "2367",
+        "stop_name": "Gupta Market",
+        "dist_m": 362.5
+      },
+      "destination_stop": {
+        "stop_id": "3635",
+        "stop_name": "C2B Janak Puri /Bharati College",
+        "dist_m": 138.7
+      },
+      "dep_hours": {
+        "9": {
+          "observed_ride": {
+            "n": 65,
+            "p50_s": 3482.5,
+            "p10_s": 3010.7,
+            "p90_s": 3977.1,
+            "min_s": 2599.9,
+            "max_s": 4096.0,
+            "boot_ci95_s": [
+              3393.6,
+              3518.2
+            ],
+            "boot_iters": 400
+          },
+          "top_route": {
+            "route_id": "2164",
+            "route_code": "711DOWN",
+            "route_name": "ISBT Sarai Kale Khan to Uttam Nagar Terminal / Uttam Nagar East Metro Station",
+            "n": 47,
+            "p50_s": 3408.1,
+            "share": 0.723
+          },
+          "scheduled": {
+            "n_trips": 12,
+            "min_s": 3761.0,
+            "median_s": 3762.0,
+            "fastest_route_id": "2188",
+            "fastest_route_code": "724ADOWN"
+          },
+          "mapping": {
+            "pair_tier": "A",
+            "n_obs_at_pair": 66,
+            "n_combos_with_obs": 196,
+            "combos_evaluated": 5170
+          }
+        }
+      }
+    },
+    "Kalkaji Mandir -> Karol Bagh": {
+      "origin_stop": {
+        "stop_id": "2562",
+        "stop_name": "Nehru Place",
+        "dist_m": 1399.1
+      },
+      "destination_stop": {
+        "stop_id": "7851",
+        "stop_name": "Shadipur DTC Colony Metro Station",
+        "dist_m": 970.7
+      },
+      "dep_hours": {
+        "9": {
+          "observed_ride": {
+            "n": 31,
+            "p50_s": 3416.3,
+            "p10_s": 2994.1,
+            "p90_s": 4244.8,
+            "min_s": 2670.8,
+            "max_s": 5523.9,
+            "boot_ci95_s": [
+              3300.9,
+              3585.8
+            ],
+            "boot_iters": 400
+          },
+          "top_route": {
+            "route_id": "2441",
+            "route_code": "930UP",
+            "route_name": "Nehru Place Terminal to West Enclave / Sansad Vihar (T)",
+            "n": 31,
+            "p50_s": 3416.3,
+            "share": 1.0
+          },
+          "scheduled": {
+            "n_trips": 1,
+            "min_s": 3669.0,
+            "median_s": 3669.0,
+            "fastest_route_id": "2441",
+            "fastest_route_code": "930UP"
+          },
+          "mapping": {
+            "pair_tier": "A",
+            "n_obs_at_pair": 32,
+            "n_combos_with_obs": 8,
+            "combos_evaluated": 3608
+          }
+        }
+      }
+    },
+    "Nehru Place -> Vasant Vihar": {
+      "origin_stop": {
+        "stop_id": "5971",
+        "stop_name": "Paras Cinema",
+        "dist_m": 303.6
+      },
+      "destination_stop": {
+        "stop_id": "3451",
+        "stop_name": "Vasant Vihar / Poorvi Marg RK Puram Sec 5",
+        "dist_m": 946.9
+      },
+      "dep_hours": {
+        "9": {
+          "observed_ride": {
+            "n": 128,
+            "p50_s": 1475.4,
+            "p10_s": 1195.5,
+            "p90_s": 1959.0,
+            "min_s": 1064.5,
+            "max_s": 2811.2,
+            "boot_ci95_s": [
+              1434.8,
+              1519.5
+            ],
+            "boot_iters": 400
+          },
+          "top_route": {
+            "route_id": "2229",
+            "route_code": "764DOWN",
+            "route_name": "Nehru Place Terminal to Jharoda Kalan Border (Satyam Puram)",
+            "n": 128,
+            "p50_s": 1475.4,
+            "share": 1.0
+          },
+          "scheduled": {
+            "n_trips": 11,
+            "min_s": 1824.0,
+            "median_s": 1824.0,
+            "fastest_route_id": "2229",
+            "fastest_route_code": "764DOWN"
+          },
+          "mapping": {
+            "pair_tier": "A",
+            "n_obs_at_pair": 128,
+            "n_combos_with_obs": 61,
+            "combos_evaluated": 3630
+          }
+        }
+      }
+    }
+  }
+}

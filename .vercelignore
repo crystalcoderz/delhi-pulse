@@ -7,3 +7,6 @@
 /*
 !workers
 !vercel.json
+
+workers/.wrangler
+workers/wrangler.toml

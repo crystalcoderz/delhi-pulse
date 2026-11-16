@@ -12,6 +12,14 @@ from huggingface_hub import HfApi, create_repo, upload_file
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "pipeline"))
 
 import os as _os
+
+# .env holds HF_TOKEN (and other credentials) in dev/finalize runs
+try:
+    from dotenv import load_dotenv
+    load_dotenv(Path(__file__).resolve().parent.parent / ".env", override=True)
+except ImportError:
+    pass
+
 TOKEN = _os.environ.get("HF_TOKEN", "")  # set via env, never commit
 USER = "PRAYAASOG"
 REPO = f"{USER}/delhi-pulse-model"

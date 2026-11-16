@@ -32,7 +32,7 @@ OD_PAIRS = [
     ("IIT Delhi", "India Gate", 28.5474, 77.1943, 28.6129, 77.2295),
     ("Saket Mall", "Chandni Chowk", 28.5285, 77.2075, 28.6506, 77.2303),
     ("Vasant Kunj", "Mayur Vihar", 28.5206, 77.1585, 28.6080, 77.2903),
-    ("JNU", "Noida Sector 18", 28.5474, 77.1943, 28.5706, 77.3219),
+    ("JNU", "Noida Sector 18", 28.5400, 77.1660, 28.5706, 77.3219),
     ("Uttam Nagar", "Anand Vihar", 28.6199, 77.0567, 28.6469, 77.3152),
     ("Karol Bagh", "Noida City Centre", 28.6449, 77.1518, 28.5747, 77.3525),
     ("Mehrauli", "Shivaji Stadium", 28.5178, 77.1827, 28.6300, 77.2220),

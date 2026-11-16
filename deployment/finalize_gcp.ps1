@@ -2,18 +2,25 @@
 #   pull artifacts -> integrate into repo -> deploy edge + D1 + HF -> smoke test
 #   -> delete the processing VM.
 #
+# Required env (no defaults — set these before running):
+#   $env:GCP_PROJECT   GCP project id
+#   $env:GCP_ZONE      VM zone, e.g. "asia-south1-a"
+#
 # Usage (from repo root):   powershell -File deployment\finalize_gcp.ps1 [-KeepVm]
 param([switch]$KeepVm)
 
 $ErrorActionPreference = "Stop"
-$proj = "project-c5c4120c-a828-4a60-a6b"
-$zone = "asia-south1-a"
+$proj = $env:GCP_PROJECT
+$zone = $env:GCP_ZONE
 $vm   = "delhi-pulse-proc"
 
 Set-Location (Join-Path $PSScriptRoot "..")
 
 function Step($n, $msg) { Write-Host "`n=== [$n] $msg ===" -ForegroundColor Cyan }
 function Die($msg)   { Write-Host "FAILED: $msg" -ForegroundColor Red; exit 1 }
+
+if (-not $proj) { Die 'set $env:GCP_PROJECT to the GCP project id' }
+if (-not $zone) { Die 'set $env:GCP_ZONE to the VM zone' }
 
 # 1) pull artifacts
 Step 1 "pulling /opt/artifacts.tar.gz (~1 GB)"
@@ -31,8 +38,8 @@ Get-ChildItem docs\d1_part*.sql | Measure-Object | ForEach-Object { Write-Host "
 # 3) commit tracked deltas (model/ and data/ are gitignored; docs + edge assets track)
 Step 3 "committing docs + edge model updates"
 git add -A docs workers
-git -c user.name="prayaas" -c user.email="157222445+crystalcoderz@users.noreply.github.com" `
-  commit -m "full-month model (Oct 1-31): 30 traversal days retrained, refreshed d1 exports, edge model.json"
+# author identity comes from the operator's own git config — never hard-code it here
+git commit -m "full-month model (Oct 1-31): 30 traversal days retrained, refreshed d1 exports, edge model.json"
 if ($LASTEXITCODE -eq 0) { git push }
 
 # 4) edge deploy
