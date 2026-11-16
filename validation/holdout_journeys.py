@@ -57,7 +57,12 @@ def sql_files(day_from, day_to):
 
 def run():
     con = duckdb.connect()
-    con.execute("SET memory_limit='6GB'")
+    # 16GB laptop: 6.5GB for DuckDB, 2 threads to keep scan buffers small
+    import os as _os
+    con.execute("SET memory_limit='{}'".format(
+        _os.environ.get("DP_DUCK_MEM_HJ", "6GB")))
+    con.execute("SET threads={}".format(
+        int(_os.environ.get("DP_DUCK_THREADS_HJ", "2"))))
     con.execute("SET preserve_insertion_order=false")
 
     train_f = sql_files("2026-10-01", TRAIN_END)
@@ -134,12 +139,20 @@ def run():
                    tsec, hour_ist,
                    (tsec + 19800) // 86400 AS d_ist
             FROM read_parquet([{test_f}])
-        ), g AS (
+        ), lagged AS (
+            -- DuckDB cannot nest window fns (SUM(CASE WHEN LAG...) OVER);
+            -- materialize the lag first, then the running sum
             SELECT *,
-                   SUM(CASE WHEN tsec - LAG(tsec) OVER w > 600 THEN 1
-                            ELSE 0 END) OVER w AS seg
+                   tsec - LAG(tsec) OVER w AS gap_prev
             FROM t WINDOW w AS (PARTITION BY route_id, trip_id, d_ist
                                ORDER BY tsec)
+        ), g AS (
+            SELECT *,
+                   SUM(CASE WHEN gap_prev > 600 OR gap_prev IS NULL
+                            THEN 1 ELSE 0 END)
+                   OVER w AS seg
+            FROM lagged WINDOW w AS (PARTITION BY route_id, trip_id, d_ist
+                                     ORDER BY tsec)
         )
         SELECT route_id, trip_id, d_ist, seg,
                COUNT(*) AS hops,
