@@ -50,6 +50,12 @@ if _rt_url:
         LIVE_LIVE.headers = {"x-api-key": os.environ["GTFS_RT_API_KEY"]}
     LIVE_LIVE.start()
 
+@app.get("/", include_in_schema=False)
+def root():
+    from fastapi.responses import RedirectResponse
+    return RedirectResponse(url="/web/")
+
+
 # ---------------------------------------------------------------- static GTFS
 stops = pd.read_csv(GTFS / "stops.txt")
 stops["stop_id"] = stops["stop_id"].astype(str)          # canonical string ids
