@@ -2,9 +2,9 @@
 
 **Real-time bus traffic model and journey planner for Delhi** — Transport Stack Hackathon 2026, Problem 1.
 
-> **Live:** [City Pulse at the edge](https://delhi-pulse.prayaas.workers.dev/) (laptop-independent, Cloudflare Workers + D1)
-
+> **Live:** [Full journey planner](https://delhi-pulse.prayaas.workers.dev/) — edge-deployed on Cloudflare Workers (APAC), no laptop required
 > **Open source:** [github.com/crystalcoderz/delhi-pulse](https://github.com/crystalcoderz/delhi-pulse)
+> **Trained model + data:** [huggingface.co/datasets/PRAYAASOG/delhi-pulse-model](https://huggingface.co/datasets/PRAYAASOG/delhi-pulse-model)
 
 ---
 

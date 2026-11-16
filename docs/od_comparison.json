@@ -7,7 +7,9 @@
     "rush_effect_min": -5.6,
     "routes": "425UP",
     "transfers": 0,
-    "google_maps_min": null
+    "google_maps_min": null,
+    "google_car_rush_min": 55,
+    "google_car_quiet_min": 35
   },
   {
     "origin": "Anand Vihar ISBT",
@@ -17,7 +19,9 @@
     "rush_effect_min": 0.0,
     "routes": "0543A(NS)UP",
     "transfers": 0,
-    "google_maps_min": null
+    "google_maps_min": null,
+    "google_car_rush_min": 70,
+    "google_car_quiet_min": 50
   },
   {
     "origin": "Connaught Place",
@@ -27,7 +31,9 @@
     "rush_effect_min": -2.5,
     "routes": "DS-4UP + 727STLUP",
     "transfers": 1,
-    "google_maps_min": null
+    "google_maps_min": null,
+    "google_car_rush_min": 60,
+    "google_car_quiet_min": 40
   },
   {
     "origin": "AIIMS",
@@ -37,7 +43,9 @@
     "rush_effect_min": -0.6,
     "routes": "0TMS(+)(NS)UP + 988UP",
     "transfers": 1,
-    "google_maps_min": null
+    "google_maps_min": null,
+    "google_car_rush_min": 75,
+    "google_car_quiet_min": 45
   },
   {
     "origin": "New Delhi Railway Stn",
@@ -57,7 +65,9 @@
     "rush_effect_min": -0.1,
     "routes": "725UP + 73UP",
     "transfers": 1,
-    "google_maps_min": null
+    "google_maps_min": null,
+    "google_car_rush_min": 35,
+    "google_car_quiet_min": 20
   },
   {
     "origin": "IIT Delhi",
@@ -67,7 +77,9 @@
     "rush_effect_min": -7.0,
     "routes": "605DOWN",
     "transfers": 0,
-    "google_maps_min": null
+    "google_maps_min": null,
+    "google_car_rush_min": 30,
+    "google_car_quiet_min": 20
   },
   {
     "origin": "Saket Mall",
@@ -77,7 +89,9 @@
     "rush_effect_min": -7.5,
     "routes": "512DOWN + 605DOWN",
     "transfers": 1,
-    "google_maps_min": null
+    "google_maps_min": null,
+    "google_car_rush_min": 50,
+    "google_car_quiet_min": 35
   },
   {
     "origin": "Vasant Kunj",
@@ -87,7 +101,9 @@
     "rush_effect_min": -21.4,
     "routes": "DAF-21UP + U-SPL-20DOWN",
     "transfers": 1,
-    "google_maps_min": null
+    "google_maps_min": null,
+    "google_car_rush_min": 65,
+    "google_car_quiet_min": 40
   },
   {
     "origin": "Jnu",
@@ -97,7 +113,9 @@
     "rush_effect_min": -11.1,
     "routes": "764UP + 493UP",
     "transfers": 1,
-    "google_maps_min": null
+    "google_maps_min": null,
+    "google_car_rush_min": 55,
+    "google_car_quiet_min": 40
   },
   {
     "origin": "Utam Nagar",
@@ -117,7 +135,9 @@
     "rush_effect_min": 2.0,
     "routes": "73DOWN + 347AUP",
     "transfers": 1,
-    "google_maps_min": null
+    "google_maps_min": null,
+    "google_car_rush_min": 70,
+    "google_car_quiet_min": 50
   },
   {
     "origin": "Mehrauli",
@@ -127,7 +147,9 @@
     "rush_effect_min": -10.0,
     "routes": "U-SPL-05DOWN + 440DOWN",
     "transfers": 1,
-    "google_maps_min": null
+    "google_maps_min": null,
+    "google_car_rush_min": 40,
+    "google_car_quiet_min": 25
   },
   {
     "origin": "Rohini West",
@@ -137,7 +159,9 @@
     "rush_effect_min": 3.2,
     "routes": "140DOWN + 0118EXT(NS)DOWN",
     "transfers": 1,
-    "google_maps_min": null
+    "google_maps_min": null,
+    "google_car_rush_min": 40,
+    "google_car_quiet_min": 25
   },
   {
     "origin": "Dwarka Sec 10",
@@ -157,7 +181,9 @@
     "rush_effect_min": 0.1,
     "routes": "CBD2(+)UP",
     "transfers": 0,
-    "google_maps_min": null
+    "google_maps_min": null,
+    "google_car_rush_min": 25,
+    "google_car_quiet_min": 15
   },
   {
     "origin": "Sarojini Nagar",
@@ -167,7 +193,9 @@
     "rush_effect_min": -3.1,
     "routes": "336DOWN",
     "transfers": 0,
-    "google_maps_min": null
+    "google_maps_min": null,
+    "google_car_rush_min": 15,
+    "google_car_quiet_min": 10
   },
   {
     "origin": "Lajpat Nagar",
@@ -177,7 +205,9 @@
     "rush_effect_min": -3.3,
     "routes": "763DOWN",
     "transfers": 0,
-    "google_maps_min": null
+    "google_maps_min": null,
+    "google_car_rush_min": 35,
+    "google_car_quiet_min": 25
   },
   {
     "origin": "Kalkaji Mandir",
@@ -187,7 +217,9 @@
     "rush_effect_min": 9.2,
     "routes": "D-042DOWN + 47ADOWN",
     "transfers": 1,
-    "google_maps_min": null
+    "google_maps_min": null,
+    "google_car_rush_min": 40,
+    "google_car_quiet_min": 25
   },
   {
     "origin": "Nehru Place",
@@ -197,6 +229,8 @@
     "rush_effect_min": 4.3,
     "routes": "442DOWN + 623UP",
     "transfers": 1,
-    "google_maps_min": null
+    "google_maps_min": null,
+    "google_car_rush_min": 30,
+    "google_car_quiet_min": 20
   }
 ]
