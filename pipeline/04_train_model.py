@@ -24,7 +24,7 @@ import os
 import duckdb
 import pandas as pd
 
-from common import ensure_dirs, CLEAN, MODEL
+from common import ensure_dirs, CLEAN, MODEL, DENSE_N
 
 
 def main():
@@ -47,32 +47,43 @@ def main():
     # cells (n 5..24) are shrunk toward the time implied by the route-hour
     # speed with a pseudo-count of 10, and their bands shrink by n/(n+10),
     # so a 3-sample cell can no longer dictate an extreme median.
+    # Memory fix: the three shrink CTEs each read the 40M-row corpus
+    # stream; on a 16GB laptop all three together OOM even at 13GB.
+    # Materialize each aggregate into a temp table SEQUENTIALLY — one
+    # pass at a time — so peak memory is one phase's output, not three.
     MIN_CELL_N = int(os.environ.get("DP_EDGE_MIN_N", "5"))
     SHRINK_K = 10
 
+    con.execute(f"""
+        CREATE OR REPLACE TEMP TABLE t_raw AS
+        SELECT route_id, from_stop, to_stop, hour_ist,
+               quantile_cont(dur_s, 0.10) AS q10_raw,
+               quantile_cont(dur_s, 0.50) AS q50_raw,
+               quantile_cont(dur_s, 0.90) AS q90_raw,
+               COUNT(*) AS n
+        FROM read_parquet([{files}])
+        GROUP BY 1,2,3,4 HAVING COUNT(*) >= {MIN_CELL_N}
+    """)
+    con.execute(f"""
+        CREATE OR REPLACE TEMP TABLE t_rh AS
+        SELECT route_id, hour_ist,
+               SUM(dur_s) AS rdur, SUM(dist_m) AS rdist
+        FROM read_parquet([{files}])
+        GROUP BY 1,2
+    """)
+    con.execute(f"""
+        CREATE OR REPLACE TEMP TABLE t_ed AS
+        SELECT route_id, from_stop, to_stop, median(dist_m) AS ede
+        FROM read_parquet([{files}])
+        GROUP BY 1,2,3
+    """)
+
     edge_hour = con.execute(f"""
-        WITH raw AS (
-            SELECT route_id, from_stop, to_stop, hour_ist,
-                   quantile_cont(dur_s, 0.10) AS q10_raw,
-                   quantile_cont(dur_s, 0.50) AS q50_raw,
-                   quantile_cont(dur_s, 0.90) AS q90_raw,
-                   COUNT(*) AS n
-            FROM read_parquet([{files}])
-            GROUP BY 1,2,3,4 HAVING COUNT(*) >= {MIN_CELL_N}
-        ), rh AS (
-            SELECT route_id, hour_ist,
-                   SUM(dur_s) AS rdur, SUM(dist_m) AS rdist
-            FROM read_parquet([{files}])
-            GROUP BY 1,2
-        ), ed AS (
-            SELECT route_id, from_stop, to_stop, median(dist_m) AS ede
-            FROM read_parquet([{files}])
-            GROUP BY 1,2,3
-        ), imp AS (
+        WITH imp AS (
             SELECT c.*, e.ede * r.rdur / NULLIF(r.rdist, 0) AS imp_s
-            FROM raw c
-            JOIN rh r USING (route_id, hour_ist)
-            JOIN ed e USING (route_id, from_stop, to_stop)
+            FROM t_raw c
+            JOIN t_rh r USING (route_id, hour_ist)
+            JOIN t_ed e USING (route_id, from_stop, to_stop)
         )
         SELECT route_id, from_stop, to_stop, hour_ist,
                LEAST(p10s, p50s) AS p10_s,
@@ -81,22 +92,26 @@ def main():
                n
         FROM (
             SELECT route_id, from_stop, to_stop, hour_ist, n,
-                   CASE WHEN n >= 24 OR imp_s IS NULL THEN q50_raw
+                   CASE WHEN n >= {DENSE_N} OR imp_s IS NULL THEN q50_raw
                         ELSE (n * q50_raw + {SHRINK_K} * imp_s)
                              / (n + {SHRINK_K}) END AS p50s,
-                   CASE WHEN n >= 24 OR imp_s IS NULL
+                   CASE WHEN n >= {DENSE_N} OR imp_s IS NULL
                         THEN GREATEST(q10_raw, 0.4 * q50_raw)
                         ELSE GREATEST(0.4 * q50_raw,
                              p50s_raw - (q50_raw - q10_raw) * n / (n + {SHRINK_K})) END AS p10s,
-                   CASE WHEN n >= 24 OR imp_s IS NULL THEN q90_raw
+                   CASE WHEN n >= {DENSE_N} OR imp_s IS NULL THEN q90_raw
                         ELSE p50s_raw + (q90_raw - q50_raw) * n / (n + {SHRINK_K}) END AS p90s
             FROM (
-                SELECT i.*, 
+                SELECT i.*,
                        (i.n * i.q50_raw + {SHRINK_K} * imp_s) / (i.n + {SHRINK_K}) AS p50s_raw
                 FROM imp i
             )
         )
     """).df()
+
+    con.execute("DROP TABLE IF EXISTS t_raw")
+    con.execute("DROP TABLE IF EXISTS t_rh")
+    con.execute("DROP TABLE IF EXISTS t_ed")
 
     route_hour = con.execute(f"""
         SELECT route_id, hour_ist,
