@@ -1,0 +1,9 @@
+# Vercel serves only the static UI in workers/public (see vercel.json); the API
+# stays on the Cloudflare Worker. Everything else is kept out of the build so
+# Vercel does not treat api/*.py as Python functions and bundle the pipeline's
+# requirements.txt (duckdb, pandas, pyarrow, lightgbm...), which exceeds the
+# 500 MB function limit. That FastAPI app also needs the gitignored data/ and
+# model/ directories, so it cannot run on Vercel in any case.
+/*
+!workers
+!vercel.json

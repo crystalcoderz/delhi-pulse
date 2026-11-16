@@ -116,6 +116,15 @@ npx wrangler deploy
 # live at https://delhi-pulse.prayaas.workers.dev/
 ```
 
+### Vercel (UI previews)
+
+Vercel deploys only the static UI in `workers/public`; `vercel.json` proxies
+the API paths to the Cloudflare Worker above, so the client's same-origin
+calls work unchanged. `.vercelignore` keeps the Python pipeline and
+`api/` out of the build (it is not a Vercel function and its dependencies
+exceed the 500 MB function limit). A Worker route added on a branch is only
+reachable from a Vercel preview after `npx wrangler deploy`.
+
 ## Project structure
 
 ```

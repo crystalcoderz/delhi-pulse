@@ -15,3 +15,5 @@ dev/
 docs/d1_*.sql
 model/patterns_*.pkl
 
+.vercel/
+
