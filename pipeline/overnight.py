@@ -4,6 +4,7 @@
 Logs to docs/overnight.log; failures recorded and skipped.
 """
 import functools
+import os
 import subprocess
 import sys
 import time
@@ -49,8 +50,12 @@ def main():
     todo = [d for d in todo if d not in EXCLUDE]
     log(f"days with pings: {len(days_have)}, traversals done: {len(days_done)}, "
         f"todo: {len(todo)} -> {todo} (excluded: {sorted(EXCLUDE & days_have)})")
+    # full-width projection: default cpu_count workers (override with
+    # DP_STREAM03_WORKERS). Memory is ~800 MB/worker, sized for the 64 GB VM.
+    w03 = int(os.environ.get("DP_STREAM03_WORKERS", os.cpu_count() or 8))
+    log(f"[03] workers per day: {w03}")
     for d in todo:
-        run("pipeline/03_project_trips.py", "--day", d)
+        run("pipeline/03_project_trips.py", "--day", d, "--workers", str(w03))
 
     log("=== refresh chain ===")
     run("pipeline/04f_pings_speeds.py", "--all")
