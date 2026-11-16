@@ -3,23 +3,25 @@
 ## 1. System overview
 
 **What we built:** a travel-time model and journey planner that treats every
-DTC bus as a moving traffic sensor, processing 19 days of October GPS
-(~550M raw pings) through a four-stage pipeline into a quantile-edge model
-served by an API with transfers, headway-aware waits, time-travel replay,
-and a live GTFS-RT blend layer.
+DTC bus as a moving traffic sensor, processing **31 days of October GPS**
+(912.9M raw pings, 560.6M kept) through a four-stage pipeline into a
+quantile-edge model — **853,480 (route, edge, hour) cells with real
+p10/p50/p90 quantiles, trained on 39.2M edge traversals from 1,073,526
+observed bus trips** — served by an API with transfers, headway-aware waits,
+time-travel replay, and a live GTFS-RT blend layer.
 
 ## 2. Data volume
 
 | Layer | Volume |
 |---|---|
-| Raw GPS observations | ~550 million pings / 19 days |
-| Kept after cleaning | ~330 million (57-63% per day) |
-| Edge traversal records | ~24 million |
-| Trips matched to shapes | 669,362 (92% match rate) |
-| Routes modeled | 2,215 (99.4% route match to GTFS) |
-| Edge x hour quantile cells | 839,382 |
-| Route x hour speed cells | 38,062 |
-| Route x hour headway cells | 39,481 |
+| Raw GPS observations | 912.9 million pings / 31 days |
+| Kept after cleaning | 560.6 million (59.5-66.3% per day) |
+| Edge traversal records | 39.2 million |
+| Trips matched to shapes | 1,073,526 (92% match rate) |
+| Routes modeled | 2,303 (99.4% route match to GTFS) |
+| Edge x hour quantile cells | 853,480 |
+| Route x hour speed cells | 40,211 |
+| Route x hour headway cells | 41,844 |
 
 ## 3. Pipeline architecture
 
@@ -46,12 +48,18 @@ splits the 24-hour "trip" spans caused by label reuse across service blocks.
 ## 5. Travel-time model
 
 ```
-(route, from_stop, to_stop, hour) -> p10/p50/p90 seconds     839,382 cells
-(route, hour)                     -> speed km/h               38,062 cells
-(route)                           -> speed km/h                2,279 rows
+(route, from_stop, to_stop, hour) -> p10/p50/p90 seconds     853,480 cells
+(route, hour)                     -> speed km/h               40,211 cells
+(route)                           -> speed km/h                2,303 rows
 (hour)                            -> city speed km/h               24 rows
-(route, hour)                     -> services -> wait         39,481 cells
+(route, hour)                     -> services -> wait         41,844 cells
 ```
+
+Cells are trained with a **minimum of 5 observations**; sparse cells
+(5 ≤ n < 24) are **shrunk toward the time implied by their route's
+hour-of-day speed** with a pseudo-count of 10, and their p10-p90 widths
+scale by n/(n+10). A cell cannot be an extreme median from a handful of
+noisy traversals. (Model version `v1.1-quantiles-shrunk`.)
 
 Dwell (stop waiting) is included in passage-to-passage time spans — that is
 what a rider experiences — and the data decomposition allows reporting it
@@ -72,23 +80,37 @@ One code path: `est = alpha * recent + (1-alpha) * historical`. Sources:
 The replay mode exercises the identical blend code against the October
 archive, enabling verification of real-time accuracy against ground truth.
 
-## 7. Validation results (leave-one-day-out, 19 folds)
+## 7. Validation results (leave-one-day-out, 31 folds)
+
+> **Correction (2026-11-16):** the first deployed model's hour bins were
+> misaligned by 5.5 hours. `hour(to_timestamp(ts + 19800))` applies the IST
+> offset a second time whenever the DuckDB session timezone is IST — which
+> every locally-run training pass was. The deployed Worker actually serves
+> with UTC-session semantics, so its bins were correct; the artifacts built
+> locally were shifted, flattening the by-hour signal. All binning is now
+> pure integer arithmetic (`((ts+19800)//3600)%24`), regression-tested under
+> three session timezones (`tests/test_time_bins.py`), and the full-month
+> retrain ran on UTC infrastructure with the fix verified live: the city
+> speed curve now peaks at 18.8 km/h at 18:00 IST against 31.0 km/h at
+> 03:00 IST.
 
 ### 7.1 Speed model (route x hour)
 
 | Metric | Value |
 |---|---|
-| Cells evaluated | 502,158 |
-| **Model MAE** | **1.92 km/h** |
-| City-hour baseline | 3.05 km/h |
-| **Lift** | **37%** |
-| MAPE | 9.9% |
-| Within 5 km/h | 93.3% |
-| Within 10 km/h | 99.2% |
+| Days cleaned | **31 (day 16 excluded from edge cells; its pings feed speeds)** |
+| Pings kept | **560.6M of 912.9M (61.4%)** |
+| Cells evaluated | 801,551 |
+| **Model MAE** | **1.96 km/h** |
+| City-hour baseline | 3.07 km/h |
+| **Lift** | **36.1%** |
 
-A day-of-week variant was tested and rejected by the harness:
-at 19 days it degraded MAE to 2.30 (weekend-sample starvation).
-Pooled hour-of-day carries the month.
+A day-of-week variant was retested at the full month, as the harness
+prescribes: the dow arm degraded MAE by 9.8% against the pooled model
+(weekends are still too thin to model separately), so route-hour pooling
+remains the served model arm. The retest, the rejection, and the arm's
+permanently-off switch (`USE_DOW = False`) are decided by the same
+leave-one-day-out harness that produces the numbers above.
 
 ### 7.2 Journey replay (stop-to-stop, real traversals)
 
@@ -115,21 +137,25 @@ Our side is the live Cloudflare Worker (`/api/journeys`), not a local copy.
 
 | OD pair | Our bus (min) | Google car + traffic (min) | Ratio |
 |---|---|---|---|
-| Kashmere Gate ISBT → Nehru Place | 54.9 | 46.5 | 1.18× |
-| Anand Vihar ISBT → Dhaula Kuan | 56.6 | 70.2 | 0.81× |
-| AIIMS → Rohini West | 97.2 | 51.2 | 1.90× |
-| IIT Delhi → India Gate | 38 | 21.1 | 1.80× |
-| Sarojini Nagar → IHC | 21.3 | 16.8 | 1.27× |
-| Kalkaji Mandir → Karol Bagh | 99.7 | 53.1 | 1.88× |
+| Kashmere Gate ISBT → Nehru Place | 54.6 | 46.5 | 1.17× |
+| Anand Vihar ISBT → Dhaula Kuan | 66.6 | 70.2 | 0.95× |
+| AIIMS → Rohini West | 100.9 | 51.2 | 1.97× |
+| IIT Delhi → India Gate | 47.1 | 21.1 | 2.23× |
+| Sarojini Nagar → IHC | 33.4 | 16.8 | 1.99× |
+| Kalkaji Mandir → Karol Bagh | 95.5 | 53.1 | 1.80× |
 
-Across all 20 pairs the bus:car ratio at rush hour is **0.81×–2.63×
-(median 1.60×)** — physically correct: buses share road space with cars and
+Across all 20 pairs the bus:car ratio at rush hour is **0.95×–2.23×
+(median 1.62×)** — physically correct: buses share road space with cars and
 add dwell (stops) and signal overhead, which compounds on cross-town
 journeys. Note our planner *beats* the car on Anand Vihar → Dhaula Kuan
 because the bus takes the direct Ring Road pattern while Google's car route
 detours (26.7 km for a 16 km crow-fly). 20/20 pairs answered by the deployed
 planner (9 of them require a transfer, which the edge worker rebuilds via
-its 1-transfer search).
+its 1-transfer search). Re-measured 2026-11-16 against the full-month model
+after the hour-bin fix; median moved from 1.60× to 1.62× because the served
+route speeds barely changed — the local artifacts carried the bug, the
+sensible deployed curve did not. All values reproducible via
+`validation/gmaps_routes.py --reuse-google`.
 
 **Why the Google comparison is driving, not transit (documented honestly):**
 the Routes API v2 has **no transit coverage for Delhi** — TRANSIT requests
