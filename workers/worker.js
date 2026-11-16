@@ -274,11 +274,143 @@ export default {
           if (options.length >= 30) break;
         }
 
+        // ---- one-transfer search (same-stop transfers; mirrors local API) ----
+        // Port of api/app.py v0.6 transfer planner: ride pattern A from the
+        // origin stop to any downstream stop that pattern B serves before the
+        // destination alight point. 2-min transfer buffer + route-hour waits,
+        // second-leg speed taken at the hour the transfer actually happens.
+        try {
+          const crowFlyM = haversineM(origin.lat, origin.lng, dest.lat, dest.lng);
+          const maxLegM = crowFlyM * 1.8 + 6000;   // prune far-out zigzags
+
+          // dest side: stop -> [[pj, j1, j2, d-index]] for every stop before alight
+          const destMap = new Map();
+          dNear.forEach((da, di) => {
+            for (const [pj, j2] of (M.membership[da.sid] || [])) {
+              const B = M.patterns[pj];
+              if (!B) continue;
+              for (let j1 = 0; j1 < j2; j1++) {
+                const s = B.s[j1];
+                let a = destMap.get(s);
+                if (!a) { a = []; destMap.set(s, a); }
+                a.push([pj, j1, j2, di]);
+              }
+            }
+          });
+
+          const waitOf = (route, hour) => {
+            const h = M.headway[route]?.[hour];
+            return h ? Math.min(15, Math.max(0.75, h / 120)) : 5;
+          };
+          const speedOf = (route, hour) =>
+            M.speeds[route]?.[hour] ?? M.route_avg[route]
+            ?? M.city_hour[hour] ?? 18;
+
+          const seenX = new Set();
+          let evaluated = 0;
+          scan:
+          for (const oa of oNear) {
+            for (const [pi, i] of (M.membership[oa.sid] || [])) {
+              const A = M.patterns[pi];
+              if (!A) continue;
+              let dA = 0;
+              const lim = Math.min(A.s.length - 1, i + 90);
+              for (let k = i + 1; k <= lim; k++) {
+                const p0 = M.stops[A.s[k - 1]], p1 = M.stops[A.s[k]];
+                if (p0 && p1) dA += haversineM(p0[0], p0[1], p1[0], p1[1]);
+                if (dA > maxLegM) break;          // dA only grows
+                const tstop = A.s[k];
+                const cands = destMap.get(tstop);
+                if (!cands) continue;
+                for (const [pj, j1, j2, di] of cands) {
+                  if (pi === pj) continue;
+                  const B = M.patterns[pj];
+                  if (!B || A.r === B.r) continue;
+                  const da = dNear[di];
+                  const key = A.r + "|" + B.r + "|" + tstop
+                            + "|" + oa.sid + "|" + da.sid;
+                  if (seenX.has(key)) continue;
+                  seenX.add(key);
+
+                  let dB = 0;
+                  for (let m = j1 + 1; m <= j2; m++) {
+                    const t0 = M.stops[B.s[m - 1]], t1 = M.stops[B.s[m]];
+                    if (t0 && t1) dB += haversineM(t0[0], t0[1], t1[0], t1[1]);
+                  }
+                  if (dB > 2 * maxLegM) continue;
+
+                  if (++evaluated > 200) break scan;   // CPU guard
+
+                  const walkOMin = oa.d * 1.3 / 80;
+                  const walkDMin = da.d * 1.3 / 80;
+                  const waitA = waitOf(A.r, hour0);
+                  const rideA = dA * 3.6 / speedOf(A.r, hour0) / 60;
+                  const thour = Math.floor(
+                    (depEpoch + (walkOMin + waitA + rideA) * 60 + 19800)
+                    / 3600 % 24);
+                  const waitB = waitOf(B.r, thour);
+                  const xferMin = 2 + waitB;            // 2-min transfer buffer
+                  const rideB = dB * 3.6 / speedOf(B.r, thour) / 60;
+                  const total = walkOMin + waitA + rideA + xferMin
+                              + rideB + walkDMin;
+
+                  const loA = [], loB = [];
+                  for (let k2 = i; k2 <= k; k2++) {
+                    const s = M.stops[A.s[k2]]; if (s) loA.push([s[0], s[1]]);
+                  }
+                  for (let m = j1; m <= j2; m++) {
+                    const s = M.stops[B.s[m]]; if (s) loB.push([s[0], s[1]]);
+                  }
+                  const ts = M.stops[tstop];
+                  const rA = M.route_names[A.r] || A.r;
+                  const rB = M.route_names[B.r] || B.r;
+                  const rideMin = rideA + rideB;
+
+                  options.push({
+                    transfers: 1,
+                    total_min: Math.round(total * 10) / 10,
+                    walk_o: Math.round(walkOMin * 10) / 10,
+                    walk_d: Math.round(walkDMin * 10) / 10,
+                    wait_min: Math.round((waitA + xferMin) * 10) / 10,
+                    ride_min: Math.round(rideMin * 10) / 10,
+                    route_id: A.r + "+" + B.r,
+                    route_name: rA + " + " + rB,
+                    board: oa.sid, board_name: oa.name,
+                    alight: da.sid, alight_name: da.name,
+                    transfer_stop: tstop,
+                    transfer_name: ts ? ts[2] : tstop,
+                    transfer_coord: ts ? [ts[0], ts[1]] : null,
+                    board_at: new Date((depEpoch + (walkOMin + waitA) * 60) * 1000).toISOString(),
+                    arrive: new Date((depEpoch + total * 60) * 1000).toISOString(),
+                    legs: [
+                      { type: "walk", minutes: Math.round(walkOMin * 10) / 10,
+                        coords: [[origin.lat, origin.lng], [oa.lat, oa.lng]] },
+                      { type: "bus", minutes: Math.round(rideA * 10) / 10,
+                        route: rA, stops: loA },
+                      { type: "transfer", minutes: Math.round(xferMin * 10) / 10,
+                        at: tstop, walk_min: 0 },
+                      { type: "bus", minutes: Math.round(rideB * 10) / 10,
+                        route: rB, stops: loB },
+                      { type: "walk", minutes: Math.round(walkDMin * 10) / 10,
+                        coords: [[da.lat, da.lng], [dest.lat, dest.lng]] },
+                    ],
+                    eta_p50_min: Math.round(total * 10) / 10,
+                    eta_p10_min: Math.round((total - 0.15 * rideMin) * 10) / 10,
+                    eta_p90_min: Math.round((total + 0.35 * rideMin) * 10) / 10,
+                    confidence: "edge-transfer-route-hour",
+                  });
+                  if (options.length >= 60) break scan;
+                }
+              }
+            }
+          }
+        } catch (e) { /* transfer search must never break direct results */ }
+
         options.sort((a, b) => a.total_min - b.total_min);
         options.forEach(o => delete o._key);
 
         return j({ options: options.slice(0, Math.min(maxO, 6)),
-                   note: options.length ? null : "no direct route found" });
+                   note: options.length ? null : "no route found within 1 transfer" });
       }
 
       // ---- lookups (existing) ----

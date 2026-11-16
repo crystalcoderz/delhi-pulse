@@ -106,29 +106,40 @@ the planner always answers.
 
 ### 7.3 Google Maps comparison (20 Delhi landmark pairs)
 
-We compare our bus journey estimates against realistic car driving times at
-rush hour (09:00 IST Tuesday). Detailed table: `docs/od_comparison.json`.
+Live comparison against the **Google Routes API v2** (`computeRoutes`,
+travelMode `DRIVE`, routingPreference `TRAFFIC_AWARE`) at the exact same
+departure instant our planner is queried at — Wednesday 2026-11-18, 09:00 IST
+(rush) and 15:00 IST (quiet). All values are real API responses collected by
+`validation/gmaps_routes.py`; detailed table: `docs/od_comparison.json`.
+Our side is the live Cloudflare Worker (`/api/journeys`), not a local copy.
 
-| OD pair | Our bus (min) | Google car (min) | Ratio |
+| OD pair | Our bus (min) | Google car + traffic (min) | Ratio |
 |---|---|---|---|
-| Kashmere Gate ISBT → Nehru Place | 63.1 | 55 | 1.1× |
-| Anand Vihar ISBT → Dhaula Kuan | 56.4 | 70 | 0.8× |
-| AIIMS → Rohini West | 82.3 | 75 | 1.1× |
-| IIT Delhi → India Gate | 39.7 | 30 | 1.3× |
-| Sarojini Nagar → IHC | 21.3 | 15 | 1.4× |
-| Kalkaji Mandir → Karol Bagh | 97.0 | 40 | 2.4× |
+| Kashmere Gate ISBT → Nehru Place | 54.9 | 46.5 | 1.18× |
+| Anand Vihar ISBT → Dhaula Kuan | 56.6 | 70.2 | 0.81× |
+| AIIMS → Rohini West | 97.2 | 51.2 | 1.90× |
+| IIT Delhi → India Gate | 38 | 21.1 | 1.80× |
+| Sarojini Nagar → IHC | 21.3 | 16.8 | 1.27× |
+| Kalkaji Mandir → Karol Bagh | 99.7 | 53.1 | 1.88× |
 
-The bus:car ratio of **1.1× to 2.4×** is physically correct — buses share
-road space with cars and add dwell (stops) and signal overhead, which
-compounds on longer cross-town journeys. Our quiet-hour (15:00) bus times
-narrow toward car quiet times, confirming the model tracks the
-underlying traffic state.
+Across all 20 pairs the bus:car ratio at rush hour is **0.81×–2.63×
+(median 1.60×)** — physically correct: buses share road space with cars and
+add dwell (stops) and signal overhead, which compounds on cross-town
+journeys. Note our planner *beats* the car on Anand Vihar → Dhaula Kuan
+because the bus takes the direct Ring Road pattern while Google's car route
+detours (26.7 km for a 16 km crow-fly). 20/20 pairs answered by the deployed
+planner (9 of them require a transfer, which the edge worker rebuilds via
+its 1-transfer search).
 
-17 of 20 pairs were matched; the remaining 3 are at the edge of the
-DTC network where car routes use highways that buses don't.
-Google Maps values are estimated car/taxi driving times (Distance Matrix
-API key not present at development time; values from Delhi traffic
-infrastructure norms).
+**Why the Google comparison is driving, not transit (documented honestly):**
+the Routes API v2 has **no transit coverage for Delhi** — TRANSIT requests
+return a walking fallback (zero transit legs) even for pure metro pairs
+such as Kashmere Gate → Rajiv Chowk (3 stops on the Yellow Line). The
+legacy Directions/Distance Matrix APIs, which historically carried Delhi
+transit, cannot be enabled on new Google Maps projects (HTTP 403
+LegacyApiNotActivatedMapError). So the reproducible, audited comparison at
+scale is Google's traffic-aware driving time; this limitation (and the
+walk-fallback probe) is recorded in `validation/gmaps_routes.py`.
 
 ## 8. Limitations
 
