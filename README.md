@@ -90,7 +90,7 @@ GET /journeys?from=<lat,lng>&to=<lat,lng>&depart=<ISO8601>
 GET /stops/search?q=<text>          fuzzy real-stop search
 GET /stops/nearby?lat=&lng=         stops within radius with walk minutes
 GET /places/autocomplete?input=     Google Places (New) typing suggestions,
-                                    Delhi-NCR restricted, key kept server-side
+                                    Delhi-NCR restricted, server key never sent to the browser
 GET /places/resolve?place_id=      place id → name + coordinates
 GET /gmaps-drive?from=&to=&depart=  Google Routes v2 traffic-aware driving
                                     time at the same departure (comparison)

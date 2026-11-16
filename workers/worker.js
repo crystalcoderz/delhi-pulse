@@ -18,8 +18,9 @@
  *   /api/geo?hour=&limit=                    → route shapes colored by speed
  *   /api/health                              → system status
  *
- * Google key lives as the Worker secret GOOGLE_MAPS_KEY and is never
- * shipped to clients.
+ * The Google server key lives as the Worker secret GOOGLE_MAPS_KEY and is
+ * never shipped to clients. The browser basemap uses a separate, referrer-
+ * restricted key, GOOGLE_MAPS_BROWSER_KEY, served by /api/maps-config.
  *
  * Static assets serve: /index.html (planner UI), /model.json.gz
  */
@@ -131,7 +132,10 @@ export default {
       }
 
       // ---- Google Maps Platform proxies (no model load needed) ----
-      // Key = env.GOOGLE_MAPS_KEY (Cloudflare secret). Never sent to clients.
+      // GKEY = env.GOOGLE_MAPS_KEY (Cloudflare secret, Places + Routes only).
+      // It is never sent to clients. The browser basemap uses a separate
+      // key, env.GOOGLE_MAPS_BROWSER_KEY, restricted to the Maps JavaScript
+      // API and this site's referrer in Google Cloud.
       const GKEY = env.GOOGLE_MAPS_KEY || null;
       // The Referer lets the key carry an HTTP-referrer restriction that also
       // covers these server-side calls.
@@ -142,10 +146,19 @@ export default {
 
       // Browser config for the Maps JavaScript API basemap.
       if (p === "/api/maps-config" || p === "/maps-config") {
-        if (!GKEY) return j({ key: null, note: "maps not configured" }, 503);
+        // Only this site's own pages (or local dev) may read the browser key.
+        const origin = request.headers.get("origin");
+        if (origin) {
+          const host = new URL(origin).hostname;
+          if (host !== url.hostname && host !== "localhost" && host !== "127.0.0.1")
+            return new Response(JSON.stringify({ key: null, note: "forbidden" }), {
+              status: 403, headers: JSONH });
+        }
+        const BKEY = env.GOOGLE_MAPS_BROWSER_KEY || null;
+        if (!BKEY) return j({ key: null, note: "maps not configured" }, 503);
         return new Response(JSON.stringify({
-          key: GKEY, mapId: env.GOOGLE_MAPS_MAP_ID || "DEMO_MAP_ID" }), {
-          headers: { ...JSONH, ...CORS, "cache-control": "public, max-age=300" } });
+          key: BKEY, mapId: env.GOOGLE_MAPS_MAP_ID || "DEMO_MAP_ID" }), {
+          headers: { ...JSONH, "cache-control": "private, max-age=300" } });
       }
       // Delhi NCR bounding box used to scope every Places lookup
       const DELHI_BOX = { rectangle: {

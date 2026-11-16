@@ -157,11 +157,15 @@ advanced APIs as a first-class part of the product:
   departure — the planner displays "🚗 Google Maps drive: X min · 🚌 our
   best bus: Y min · ratio". Verified end-to-end: Nehru Planetarium →
   Select Citywalk Mall renders 61 min by bus vs 56 min by car (1.08×).
-* **Key security.** The Google key is stored as a Cloudflare Worker
-  *secret* (`GOOGLE_MAPS_KEY`) and is only used server-side inside the
-  Worker; the browser never sees it. All Google calls are proxied through
-  three documented endpoints: `/api/places/autocomplete`,
-  `/api/places/resolve`, `/api/gmaps-drive`.
+* **Key security.** Two Google keys, both stored as Cloudflare Worker
+  *secrets*. The server key (`GOOGLE_MAPS_KEY`, restricted to Places and
+  Routes) is only used inside the Worker and the browser never sees it; all
+  server-side Google calls are proxied through three documented endpoints:
+  `/api/places/autocomplete`, `/api/places/resolve`, `/api/gmaps-drive`.
+  The Maps JavaScript API cannot run without a key in the page, so the
+  basemap uses a separate browser key (`GOOGLE_MAPS_BROWSER_KEY`) limited to
+  the Maps JavaScript API and this site's HTTP referrer, served only to
+  same-origin requests by `/api/maps-config`.
 
 Two engineering notes for reproducibility: (1) Google's field masks must be
 delivered via the `$fields` **query parameter** through Cloudflare Workers —
