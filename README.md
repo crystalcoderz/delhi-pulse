@@ -100,6 +100,12 @@ use the `DATA_URL` from `pipeline/common.py`).
 Deployed edge API: **https://delhi-pulse.prayaas.workers.dev** (same routes
 with or without the `/api` prefix).
 
+Try every endpoint in the browser at
+**https://delhi-pulse.prayaas.workers.dev/playground**: edit the parameters,
+send the request, and read the response as a JSON tree or as a drawn preview
+(journey legs, route speeds, the city speed curve). Each request has a
+shareable link, and the planner links to the exact request behind its results.
+
 ```
 GET /journeys?from=<lat,lng>&to=<lat,lng>&depart=<ISO8601>
     → journey options with walk/wait/ride legs + p10/p50/p90 ETA bands
