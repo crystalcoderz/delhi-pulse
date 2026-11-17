@@ -1,9 +1,8 @@
 /**
  * Delhi Pulse — Edge Worker v4
  *
- * v3: FULL journey planner at the edge. Loads model.json.gz from its own
- * static asset on first request, serves walk/wait/ride/transfers with
- * real Delhi speeds, headways, quantile-style bands.
+ * v4: live GTFS-RT data via workers/live.js (KV + cron poller),
+ *     plus all the v3 planner features.
  *
  * v4 (fix-plan A + judge-surface P0):
  *   - model.json.gz is the PRIMARY asset (970 KB vs 3.8 MB cold parse);
@@ -33,6 +32,7 @@
  *   /api/status                              → model + edges + live counters
  *   /api/maps-config                         → browser basemap key (v2 UI)
  *   /api/health                              → system status
+ *   /api/openapi.json (/openapi.json)        → OpenAPI 3.1 spec (D8)
  *
  * The Google server key lives as the Worker secret GOOGLE_MAPS_KEY and is
  * never shipped to clients. The browser basemap uses a separate, referrer-
@@ -41,6 +41,8 @@
  * Static assets serve: /index.html (planner UI), /model.json.gz (PRIMARY;
  * model.json kept only as a dev fallback)
  */
+import { initLive } from "./live.js";   // A6: live GTFS-RT poller
+
 const JSONH = { "content-type": "application/json" };
 const CORS = {
   "access-control-allow-origin": "*",
@@ -275,6 +277,15 @@ function speedColor(kmh, vmax = 36) {
 
 // ---- export ----
 export default {
+  // A6: live GTFS-RT poller (every 3 min via [triggers] cron in wrangler.toml)
+  async scheduled(event, env, ctx) {
+    try {
+      const r = await initLive(env).update(env);
+      console.log("live cron:", JSON.stringify(r));
+    } catch (e) {
+      console.error("live cron failed:", String(e));
+    }
+  },
   async fetch(request, env) {
     const url = new URL(request.url);
     if (request.method === "OPTIONS") return new Response(null, { headers: CORS });
@@ -287,6 +298,20 @@ export default {
         return j({ ok: true, stops: Object.keys(M.stops).length,
                    patterns: M.patterns.length,
                    routes: Object.keys(M.route_avg).length });
+      }
+
+      // ---- D8: OpenAPI 3.1 spec (workers/public/openapi.json) ----
+      // /openapi.json is also served directly by the static-assets layer
+      // (workers/public); this handler mirrors it under /api/openapi.json
+      // and covers dev setups where assets routing is bypassed. Read-only,
+      // no model load, CORS * like the rest of the read API.
+      if (p === "/api/openapi.json" || p === "/openapi.json") {
+        const spec = await env.ASSETS.fetch(
+          new Request("https://delhi-pulse.prayaas.workers.dev/openapi.json"));
+        if (spec.ok)
+          return new Response(spec.body, { headers: {
+            ...JSONH, ...CORS, "cache-control": "public, max-age=3600" } });
+        return j({ error: "openapi.json asset missing" }, 404);
       }
 
       // ---- Google Maps Platform proxies (no model load needed) ----
@@ -727,14 +752,24 @@ export default {
         const PATTERN_WALK_WINDOW = 90;
         const DIRECT_PATTERN_CAP = 256;   // pathological-intersection guard
         let oNear, dNear;
-        const mkNearby = (lat, lng, k = 8, limit = 2500) =>
-          Object.keys(M.stops)
-            .map(sid => { const s = M.stops[sid];
-              return { sid, d: haversineM(lat, lng, s[0], s[1]),
-                       name: s[2], lat: s[0], lng: s[1] }; })
-            .filter(x => (M.membership[x.sid] || []).length > 0)
-            .filter(x => x.d <= limit)
-            .sort((a, b) => a.d - b.d).slice(0, k);
+        // C4: walking candidates cap at 1200 m — walks beyond that are
+        // penalized in the ranking (score() below), so a 2.5 km slog should
+        // not masquerade as a "nearby" boarding stop. If the tighter cap
+        // empties the list entirely (remote origin with no member stop in
+        // 1.2 km), fall back to the old 2500 m scan so remote origins still
+        // answer.
+        const mkNearby = (lat, lng, k = 8, limit = 1200) => {
+          const scan = (lim) =>
+            Object.keys(M.stops)
+              .map(sid => { const s = M.stops[sid];
+                return { sid, d: haversineM(lat, lng, s[0], s[1]),
+                         name: s[2], lat: s[0], lng: s[1] }; })
+              .filter(x => (M.membership[x.sid] || []).length > 0)
+              .filter(x => x.d <= lim)
+              .sort((a, b) => a.d - b.d).slice(0, k);
+          const near = scan(limit);
+          return near.length ? near : scan(2500);
+        };
 
         const hasStop = (id) =>
           M.stops != null && Object.prototype.hasOwnProperty.call(M.stops, id);
@@ -846,6 +881,33 @@ export default {
           waitCache.set(k, null);
           return null;
         };
+        // B5: wait SPREAD from the observed gap distribution. waitRange
+        // mirrors waitAt's ±1h service scan but prices the arrival-theorem
+        // wait E[g^2]/(2E[g]) = mean*(1+cv^2)/2 off M.wait_gap
+        // (route -> hour -> [raw mean_gap_s, gap_cv], exported by B5).
+        // Missing gap stats fall back to the headway as the mean with
+        // cv=0.8 (dispatcher-bunched service). p10 is the best case — a
+        // bus is already at the stop (0.5 min floor); p90 is the unlucky
+        // long gap, widened by the observed dispersion. Same hours as
+        // waitAt resolve, so a non-null waitAt implies a non-null
+        // waitRange for the same (route, hour).
+        const waitRange = (route, hour) => {
+          for (const dh of [0, -1, 1]) {
+            const h = ((hour + dh) % 24 + 24) % 24;
+            const w = M.headway?.[route]?.[h];
+            const g = M.wait_gap?.[route]?.[h];     // [mean_gap_s, gap_cv]
+            if (w != null && w <= 3600) {
+              const mean = g ? g[0] : w;               // raw mean gap
+              const cv = g ? g[1] : 0.8;               // default if gap stats missing
+              const wait = Math.min(60, Math.max(0.75, mean * (1 + cv * cv) / 2 / 60));
+              // wait_10 = fast bus arrives immediately; wait_90 = unlucky (long gap)
+              const lo = Math.min(wait, 0.5);          // best case (bus just arrived)
+              const hi = Math.min(60, wait * (1 + 1.3 * cv));
+              return { p50: wait, p10: lo, p90: hi };
+            }
+          }
+          return null;
+        };
         // cumulative chord length per pattern, memoised per request: an
         // O(1) position->position span lookup for candidate ranking
         const cumOf = (() => {
@@ -939,6 +1001,13 @@ export default {
           const rideS = distM * detourOf(route) * 3.6 / spd.sp;
           const waitMin = waitAt(route, hour0);
           if (waitMin == null) continue;   // B4: not running this hour
+          // B5: the p10/p90 band prices the wait from the observed gap
+          // distribution; waitMin (headway/2) stays exact in total_min
+          // and p50. The fallback is unreachable today (waitRange scans
+          // the same ±1h service window as waitAt) but keeps the band
+          // well-defined if the two ever drift apart.
+          const wr = waitRange(route, hour0)
+            || { p50: waitMin, p10: Math.min(waitMin, 0.5), p90: waitMin };
           const walkOMin = oa.d * 1.3 / 80;
           const walkDMin = da.d * 1.3 / 80;
           const total = walkOMin + waitMin + rideS/60 + walkDMin;
@@ -961,6 +1030,9 @@ export default {
             walk_o: Math.round(walkOMin * 10) / 10,
             walk_d: Math.round(walkDMin * 10) / 10,
             wait_min: Math.round(waitMin * 10) / 10,
+            // B5 transparency: the gap-model wait behind the band, seconds
+            wait_p50_s: Math.round(wr.p50 * 60),
+            wait_p90_s: Math.round(wr.p90 * 60),
             ride_min: Math.round(rideS / 60 * 10) / 10,
             route_id: route,
             route_code: rName,
@@ -980,10 +1052,16 @@ export default {
             ],
             eta_p50_min: Math.round(total * 10) / 10,
             // D2: bands cover the whole journey incl. final walk;
-            // A3: ratios from the trained quantile cells (B7-calibrated)
-            eta_p10_min: Math.round((walkOMin + waitMin + walkDMin
+            // A3: ratios from the trained quantile cells (B7-calibrated).
+            // B5: the wait spread joins the band — wait_p10/p90 replace
+            // the exact waitMin in the p10/p90 arithmetic. The clamps
+            // keep p10 <= p50 <= p90 when the observed gap mean sits
+            // below the headway/2 point estimate (tight observed gaps).
+            eta_p10_min: Math.round(Math.min(total,
+              walkOMin + wr.p10 + walkDMin
               + rideS * bandOf(route, hour0)[0] / 60) * 10) / 10,
-            eta_p90_min: Math.round((walkOMin + waitMin + walkDMin
+            eta_p90_min: Math.round(Math.max(total,
+              walkOMin + wr.p90 + walkDMin
               + rideS * bandOf(route, hour0)[1] / 60) * 10) / 10,
             confidence: "edge-route-hour",
           });
@@ -1072,6 +1150,12 @@ export default {
               + 19800) / 3600) % 24) + 24) % 24);
             const waitB = waitAt(B.r, thour);
             if (waitB == null) return true;   // B4: B not running at transfer hour
+            // B5: the second-leg wait inside xferMin carries its own
+            // spread (waitB stays exact in total_min/p50). Same fallback
+            // reasoning as the direct phase — waitRange scans the same
+            // ±1h window as waitAt, so this only guards future drift.
+            const wrB = waitRange(B.r, thour)
+              || { p50: waitB, p10: Math.min(waitB, 0.5), p90: waitB };
             const xferMin = 2 + hopMin + waitB;   // buffer + hop (C5) + wait
             const infoB = speedInfoOf(B.r, thour);
             const rideB = dB * detourOf(B.r) * 3.6 / infoB.sp / 60;
@@ -1128,12 +1212,18 @@ export default {
               ],
               eta_p50_min: Math.round(total * 10) / 10,
               // A3: per-leg band ratios from the trained quantile cells
-              // (B7-calibrated; walks/waits are exact, so the band stays
-              // anchored to the same base as p50: p10 <= p50 <= p90)
-              eta_p10_min: Math.round((total
+              // (B7-calibrated; walks are exact, so the band stays
+              // anchored to the same base as p50: p10 <= p50 <= p90).
+              // B5: the second-leg wait inside xferMin carries its own
+              // spread — (waitB - wrB.p10) / (wrB.p90 - waitB) shift the
+              // anchors by the gap-model wait. Clamps keep the ordering
+              // when the observed gaps are tighter than headway/2.
+              eta_p10_min: Math.round(Math.min(total, total
+                - (waitB - wrB.p10)
                 - rideA * (1 - bandOf(ctx.A.r, hour0)[0])
                 - rideB * (1 - bandOf(B.r, thour)[0])) * 10) / 10,
-              eta_p90_min: Math.round((total
+              eta_p90_min: Math.round(Math.max(total, total
+                + (wrB.p90 - waitB)
                 + rideA * (bandOf(ctx.A.r, hour0)[1] - 1)
                 + rideB * (bandOf(B.r, thour)[1] - 1)) * 10) / 10,
               confidence: "edge-transfer-route-hour",
@@ -1237,7 +1327,15 @@ export default {
           if (!prev || o.total_min < prev.total_min) bySeq.set(k, o);
         }
         const ranked = [...bySeq.values()];
-        ranked.sort((a, b) => a.total_min - b.total_min);
+        // C4: rank on an internal score that prices transfers and long
+        // walks on top of total time; total_min stays the reported headline
+        // number. The fastest raw option may therefore not rank #1 — e.g.
+        // a 55-min zero-transfer option outranks a 54-min option with 2
+        // transfers (+10) and a 1.5 km total walk (+2.5).
+        const score = (o) => o.total_min
+          + 5 * (o.transfers || 0)                          // 5-min penalty per transfer
+          + 0.5 * Math.max(0, (o.walk_o + o.walk_d) - 10);  // 0.5 min per walk-minute past 10 total
+        ranked.sort((a, b) => score(a) - score(b));
         ranked.forEach(o => delete o._key);
 
         const asOfNote = asOfT
@@ -1285,7 +1383,7 @@ export default {
           routes: Object.keys(M2.route_avg).length,
           patterns: M2.patterns.length,
           edges: M2.edge_count ?? 0,   // trained edge cells shipped in the model asset
-          live: { vehicles: 0, url: false, n_fetch: 0 },
+          live: await initLive(env).status(env),  // A6: real KV state (was hardcoded zeros)
           note: "edge deployment"
         });
       }
@@ -1300,8 +1398,10 @@ export default {
                                "/api/places/resolve?place_id=",
                                "/api/gmaps-drive?from=&to=&depart=",
                                "/api/pulse", "/api/geo?hour=&limit=&stride=",
-                               "/api/lookup?route=&hour="],
-                   docs: "github.com/crystalcoderz/delhi-pulse" });
+                               "/api/lookup?route=&hour=",
+                               "/api/openapi.json"],
+                   docs: ["github.com/crystalcoderz/delhi-pulse",
+                          "openapi.json (OpenAPI 3.1 spec; also at /api/openapi.json)"] });
       }
 
       return j({ error: "not found" }, 404);

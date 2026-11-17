@@ -198,38 +198,52 @@ WAITR = {(str(r.route_id), int(r.hour_ist)): float(r.headway_s)
          for r in _wait_real_df.itertuples()} if len(_wait_real_df) else {}
 
 # ---- B5: observed-gap wait model ----
-# Half the headway assumes perfectly even spacing. The arrival-theorem wait for
-# a renewal process is E[g^2] / (2 E[g]) = mean * (1 + cv^2) / 2, so the gap
-# spread matters as much as the mean. The 04g/export agent is adding
-# `wait_mean_s` + `gap_cv` to wait_headway_real.parquet (and M.wait_gap).
-# Until those columns exist this map is empty and the headway/2 model below is
-# used unchanged.
-# TODO(B5): drop the headway/2 branch once the exporter writes wait_mean_s and
-# gap_cv (per route-hour) — then waits carry the observed dispersion.
+# Half the headway assumes perfectly even spacing. The arrival-theorem wait
+# for a renewal process is E[g^2] / (2 E[g]) = mean * (1 + cv^2) / 2, so the
+# gap spread matters as much as the mean. The exporter now writes
+# `wait_mean_s` + `gap_cv` to wait_headway_real.parquet (and M.wait_gap), so
+# WAITGAP stores the full wait RANGE (minutes, mirroring the edge Worker's
+# waitRange()):
+#   p50 = clamp(0.75, 60, mean*(1+cv^2)/2)   arrival-theorem wait
+#   p10 = min(p50, 0.5)                      best case: bus already boarding
+#   p90 = min(60, p50 * (1 + 1.3*cv))        unlucky long gap, by dispersion
 # 04g stores the RAW mean gap (wait_mean_s / gap_mean_s are aliases) and the
-# gap coefficient of variation; the arrival-theorem correction is applied here.
+# gap coefficient of variation; the arrival-theorem correction is applied
+# here. wait_minutes() keeps returning the p50 scalar so every caller is
+# unchanged, with the local-API [0.75, 15] clamp applied on top.
 WAITGAP = {}
+
+
+def _wait_range(mean_s, cv):
+    """B5 wait range in minutes {p50, p10, p90} from a raw mean gap + cv."""
+    mean_s = min(3600.0, max(0.0, float(mean_s)))
+    cv = min(5.0, max(0.0, float(cv)))
+    p50 = min(60.0, max(0.75, mean_s * (1.0 + cv * cv) / 2.0 / 60.0))
+    return {"p50": p50,
+            "p10": min(p50, 0.5),
+            "p90": min(60.0, p50 * (1.0 + 1.3 * cv))}
+
+
 if len(_wait_real_df) and "gap_cv" in _wait_real_df.columns:
     _mean_col = next((c for c in ("wait_mean_s", "gap_mean_s")
                       if c in _wait_real_df.columns), None)
     if _mean_col:
         WAITGAP = {(str(r.route_id), int(r.hour_ist)):
-                   (min(3600.0, max(0.0, float(getattr(r, _mean_col)))),
-                    min(5.0, max(0.0, float(r.gap_cv))))
+                   _wait_range(getattr(r, _mean_col), r.gap_cv)
                    for r in _wait_real_df.itertuples()
                    if pd.notna(getattr(r, _mean_col)) and pd.notna(r.gap_cv)}
 
 
 def wait_minutes(route_id, stop_id, hour=None):
     """Expected wait, clamped [0.75, 15] min.
-    Precedence: observed gaps (B5, once exported) -> real service headways
-    (trip labels) -> synth stop headways (pooled, hour-aware) -> flat default."""
+    Precedence: observed gaps (B5: p50 of the arrival-theorem range) ->
+    real service headways (trip labels) -> synth stop headways (pooled,
+    hour-aware) -> flat default."""
     route_id, stop_id = str(route_id), str(stop_id)
     if hour is not None:
         gp = WAITGAP.get((route_id, int(hour) % 24))
         if gp:
-            mean_s, cv = gp
-            return min(15.0, max(0.75, mean_s * (1.0 + cv * cv) / 2.0 / 60.0))
+            return min(15.0, max(0.75, gp["p50"]))
         h = WAITR.get((route_id, int(hour) % 24))
         if h:
             return min(15.0, max(0.75, h / 120.0))

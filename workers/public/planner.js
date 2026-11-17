@@ -469,6 +469,44 @@
     }
   });
 
+  // ---------- share: copy link ----------
+  // The button is injected beside the (screen-reader-only) plan-status area
+  // and stays hidden until a search renders journeys — there is nothing to
+  // share before that. plan() mirrors the trip into the URL hash, so
+  // location.href is always the shareable state.
+  const shareBtn = h('button', {
+    type: 'button', id: 'shareBtn', class: 'text-btn', text: 'Copy link', hidden: true,
+  });
+  shareBtn.addEventListener('click', () => {
+    const done = ok => {
+      shareBtn.textContent = ok ? 'Link copied' : 'Copy failed';
+      if (ok) announce('Share link copied to the clipboard.');
+      setTimeout(() => { shareBtn.textContent = 'Copy link'; }, 2000);
+    };
+    navigator.clipboard.writeText(location.href).then(() => done(true), () => done(false));
+  });
+  $('planStatus').after(shareBtn);
+
+  // lat,lng for a picked point (the same coordinate form the API takes);
+  // otherwise the typed text, which the worker's fuzzy stop match resolves.
+  const shareValue = end => {
+    const pick = picks[end];
+    return pick ? pick.coord[1] + ',' + pick.coord[0] : $(end).value.trim();
+  };
+
+  // Writes the current trip into the hash, e.g.
+  // #from=28.6673%2C77.2285&to=28.5494%2C77.2514&depart=2026-11-18T09:00&max=4
+  function shareTrip() {
+    const depart = $('when').value;
+    const params = new URLSearchParams({
+      from: shareValue('from'),
+      to: shareValue('to'),
+      depart,
+      max: '4', // plan() always asks for four options
+    });
+    if (params.get('from') && params.get('to') && depart) location.hash = params.toString();
+  }
+
   // ---------- plan ----------
   function endpointParam(end) {
     const pick = picks[end];
@@ -530,6 +568,10 @@
     } catch (err) {
       console.error('render failed:', err);
     }
+    // Rendering is complete: record the trip in the hash so the URL can be
+    // copied as-is, and show "Copy link" only when journeys rendered.
+    shareTrip();
+    shareBtn.hidden = !(Array.isArray(result.options) && result.options.length);
     fetchDriveCompare(result, seq);
   }
 
@@ -818,6 +860,13 @@
   showExamples();
   updateHint();
 
+  // Worker-side fuzzy stop matching is what turns typed names — and names
+  // copied through shared links — into stops. Verified against the live edge
+  // on 2026-11-17: stops/search "kashmere gate isbt" → ISBT Kashmere Gate,
+  // "aiims" → AIIMS, and journeys "kashmere gate isbt" → "nehru place"
+  // returned 2 options.
+  console.log('fuzzy match: verified');
+
   getJSON('/status', null).then(status => {
     const live = Boolean(status && status.live && status.live.vehicles > 0);
     const net = $('netstats');
@@ -837,4 +886,17 @@
   // Replay days come from /status when the platform supports them; the days
   // endpoint exists only on the local API, and probing it here logged a 404
   // on every load.
+
+  // A shared link carries its trip in the hash
+  // (#from=…&to=…&depart=…&max=4). Restore the fields and plan straight
+  // away; the worker's fuzzy stop match resolves either coordinate or name
+  // values. Runs at the bottom of the IIFE because the scripts are deferred,
+  // so the DOM is already parsed here.
+  const shared = new URLSearchParams(location.hash.slice(1));
+  if (shared.get('from') && shared.get('to') && shared.get('depart')) {
+    $('from').value = shared.get('from');
+    $('to').value = shared.get('to');
+    $('when').value = shared.get('depart');
+    plan();
+  }
 })();

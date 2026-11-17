@@ -373,6 +373,11 @@ async function getLiveRoutes(env, hour) {
 }
 
 // ---- /status live field (additive: keeps vehicles/url/n_fetch keys) ----
+// last_poll / n_fetch prefer the speeds blob but FALL BACK to the raw
+// positions blob: a failed speeds put must never hide a firing cron, and
+// stale:true must mean "planner not serving live right now" — which
+// mirrors getLiveRoutes(), who still recomputes buckets from a FRESH
+// positions window when only the speeds blob went stale.
 async function status(env) {
   const e = env || _env;
   const base = { vehicles: 0, url: false, n_fetch: 0 };
@@ -380,19 +385,22 @@ async function status(env) {
   try {
     const [spd, pos] = await Promise.all([loadSpd(e), loadPos(e)]);
     const t = nowS();
-    const fresh = spd && t - spd.t <= STALE_S;
+    const freshS = !!(spd && t - spd.t <= STALE_S);
+    const freshP = !!(pos && t - pos.t <= STALE_S);
+    const fresh = freshS || freshP;            // either blob fresh = cron alive
     let vehicles = 0, points = 0;
     if (pos && pos.vs) {
       vehicles = Object.keys(pos.vs).length;
       for (const k of Object.keys(pos.vs)) points += pos.vs[k].p.length / 3;
     }
     const routes = spd && spd.buckets ? Object.keys(spd.buckets).length : 0;
+    const pollSrc = (freshS && spd) || (freshP && pos) || spd || pos || {};
     return {
       vehicles, points, routes,
-      pairs: fresh ? countPairs(spd.buckets || {}) : 0,
+      pairs: freshS ? countPairs(spd.buckets || {}) : 0,
       url: !!e.GTFS_RT_URL,
-      n_fetch: fresh ? spd.n_poll || 0 : 0,    // polls counted in this blob
-      last_poll: spd ? spd.t || null : null,
+      n_fetch: pollSrc.n_poll || 0,            // polls counted in this blob
+      last_poll: pollSrc.t || null,            // epoch s of the last cron put
       stale: !fresh,
       configured: true,
     };
