@@ -1,8 +1,8 @@
 {
   "meta": {
-    "generated_utc": "2026-11-16T17:37:09+00:00",
+    "generated_utc": "2026-11-17T09:17:39+00:00",
     "script": "validation/pair_baselines.py",
-    "description": "Observed bus ride-time medians (stage-03 passages) and GTFS timetable minima for the 20 OD pairs. Both are origin-stop to destination-stop in-vehicle times: no access walk, no wait.",
+    "description": "Observed bus ride-time medians (stage-03 passages) and GTFS timetable minima for the 20 OD pairs. Both are origin-stop to destination-stop in-vehicle times: no access walk, no wait. Pairs with no direct bus in the dep hour carry a transfer-level observed time instead (see transfer_observed).",
     "od_pairs": 20,
     "dep_hours_ist": [
       9
@@ -20,6 +20,17 @@
       "rule": "pair-aware: every GTFS stop within 1500 m of each landmark is enumerated as origin x destination combinations; the nearest combination with real service is used. Tiers: A >= 5 observed trips, B >= 1 observed, C scheduled only, D nearest regardless. Both numbers for a pair are computed at the same stop pair",
       "tier_a_min_obs": 5,
       "candidate_radius_m": 1500.0
+    },
+    "transfer_observed": {
+      "pairs": [
+        "AIIMS -> Rohini West",
+        "JNU -> Noida Sector 18",
+        "Karol Bagh -> Noida City Centre",
+        "New Delhi Railway Stn -> Gurgaon Border"
+      ],
+      "definition": "observed transfer-through time for the pairs with no direct bus in the dep hour: board leg A inside the IST hour at the planner's boarding stop (or any origin-ring stop, <= 1500 m, when the planner recorded none), alight at the planned transfer stop, board leg B at the same stop within 20 min, alight at the planned alighting stop (or any destination-ring stop). Per-leg identity rules and the mid-ride gap check as the direct scan; the reported observed bus time for these pairs is this transfer-through median. A pair whose every plan verifies empty in the passages keeps transfer_observed false and records the plans with their n=0 outcome and reason",
+      "plans_source": "the planner's own /api/journeys top options: live edge re-check 2026-11-17 (09:00 IST, max=2); JNU -> Noida Sector 18 has no live 09:00 option, its plans come from the recorded od_comparison.json response and the live 15:00 IST option",
+      "max_transfer_wait_s": 1200.0
     },
     "stats": {
       "median": "quantile_cont (linear interpolation)",
@@ -229,6 +240,76 @@
             "n_obs_at_pair": 0,
             "n_combos_with_obs": 0,
             "combos_evaluated": 4488
+          },
+          "transfer_observed": true,
+          "transfer": {
+            "n": 40,
+            "p50_s": 6689.0,
+            "p10_s": 5611.3,
+            "p90_s": 7688.4,
+            "min_s": 5496.5,
+            "max_s": 8740.1,
+            "boot_ci95_s": [
+              6511.1,
+              6869.0
+            ],
+            "boot_iters": 400,
+            "route_plan": "502DOWN + 113UP",
+            "routes": [
+              "502DOWN",
+              "113UP"
+            ],
+            "plans": [
+              {
+                "route_a_code": "502DOWN",
+                "route_b_code": "113UP",
+                "route_a_id": "1995",
+                "route_b_id": "54",
+                "board_stop": {
+                  "stop_id": "2997",
+                  "stop_name": "Safdurjung Hospital / AIIMS"
+                },
+                "transfer_stop": {
+                  "stop_id": "269",
+                  "stop_name": "GPO Kasmeri Gate"
+                },
+                "alight_stop": {
+                  "stop_id": "492",
+                  "stop_name": "Rohini Depot II"
+                },
+                "source": "live /api/journeys (2026-11-17, 09:00 IST, max=2), option 1",
+                "n": 40,
+                "p50_s": 6689.0
+              },
+              {
+                "route_a_code": "442DOWN",
+                "route_b_code": "113UP",
+                "route_a_id": "1941",
+                "route_b_id": "54",
+                "board_stop": {
+                  "stop_id": "2829",
+                  "stop_name": "AIIMS"
+                },
+                "transfer_stop": {
+                  "stop_id": "7586",
+                  "stop_name": "Azadpur Metro Station"
+                },
+                "alight_stop": {
+                  "stop_id": "492",
+                  "stop_name": "Rohini Depot II"
+                },
+                "source": "live /api/journeys (2026-11-17, 09:00 IST, max=2), option 2",
+                "n": 0,
+                "p50_s": null
+              }
+            ],
+            "transfer_stops_top": [
+              {
+                "stop_id": "269",
+                "stop_name": "GPO Kasmeri Gate",
+                "n": 40
+              }
+            ]
           }
         }
       }
@@ -257,6 +338,55 @@
             "n_obs_at_pair": 0,
             "n_combos_with_obs": 0,
             "combos_evaluated": 272
+          },
+          "transfer_observed": true,
+          "transfer": {
+            "n": 59,
+            "p50_s": 5488.8,
+            "p10_s": 3997.0,
+            "p90_s": 6435.3,
+            "min_s": 3211.9,
+            "max_s": 7085.7,
+            "boot_ci95_s": [
+              5314.8,
+              5668.6
+            ],
+            "boot_iters": 400,
+            "route_plan": "AIRPORT-EXP-04UP + KAROL BAGH TO GURGAON UP",
+            "routes": [
+              "AIRPORT-EXP-04UP",
+              "KAROL BAGH TO GURGAON UP"
+            ],
+            "plans": [
+              {
+                "route_a_code": "AIRPORT-EXP-04UP",
+                "route_b_code": "KAROL BAGH TO GURGAON UP",
+                "route_a_id": "2865",
+                "route_b_id": "2707",
+                "board_stop": {
+                  "stop_id": "1574",
+                  "stop_name": "New Delhi Railway Station Gate 2"
+                },
+                "transfer_stop": {
+                  "stop_id": "3650",
+                  "stop_name": "Dhaula Kuan"
+                },
+                "alight_stop": {
+                  "stop_id": "6998",
+                  "stop_name": "Atlas Chowk"
+                },
+                "source": "live /api/journeys (2026-11-17, 09:00 IST, max=2)",
+                "n": 59,
+                "p50_s": 5488.8
+              }
+            ],
+            "transfer_stops_top": [
+              {
+                "stop_id": "3650",
+                "stop_name": "Dhaula Kuan",
+                "n": 59
+              }
+            ]
           }
         }
       }
@@ -485,6 +615,50 @@
             "n_obs_at_pair": 0,
             "n_combos_with_obs": 0,
             "combos_evaluated": 1364
+          },
+          "transfer_observed": false,
+          "transfer": {
+            "n": 0,
+            "note": "no observed transfer journey: every planner plan below verified empty in the passages (see per-plan notes)",
+            "boot_ci95_s": null,
+            "boot_iters": 400,
+            "plans": [
+              {
+                "route_a_code": "448UP",
+                "route_b_code": "493UP",
+                "route_a_id": "1958",
+                "route_b_id": "1990",
+                "board_stop": null,
+                "transfer_stop": null,
+                "alight_stop": null,
+                "source": "planner response recorded in docs/od_comparison.json (09:00 IST); the live 09:00 edge returns no route as of 2026-11-17, and no stop detail was recorded, so the legs anchor to the pair's 1500 m rings",
+                "n": 0,
+                "p50_s": null,
+                "note": "verified unobservable in the Oct 2026 passages: 448UP has 0 passages in the 44-stop JNU origin ring and 493UP 0 in the destination ring, all month"
+              },
+              {
+                "route_a_code": "D-030DOWN",
+                "route_b_code": "323UP",
+                "route_a_id": "1337",
+                "route_b_id": "1814",
+                "board_stop": {
+                  "stop_id": "4621",
+                  "stop_name": "Central School"
+                },
+                "transfer_stop": {
+                  "stop_id": "2841",
+                  "stop_name": "South Extension  Petrol pump"
+                },
+                "alight_stop": {
+                  "stop_id": "5781",
+                  "stop_name": "Atta Chowk"
+                },
+                "source": "live /api/journeys (2026-11-17, 15:00 IST, max=2)",
+                "n": 0,
+                "p50_s": null,
+                "note": "leg 1 is observable (60 09:00-boardings at 4621 reach 2841) but 323UP has 0 passages at 2841 in the 09:00-10h window (observed only 06-07h and 11-21h), so no <=20min chain exists; also 0 with the transfer point floated over the route pair's shared stops"
+              }
+            ]
           }
         }
       }
@@ -563,6 +737,55 @@
             "n_obs_at_pair": 0,
             "n_combos_with_obs": 0,
             "combos_evaluated": 574
+          },
+          "transfer_observed": true,
+          "transfer": {
+            "n": 6,
+            "p50_s": 6294.5,
+            "p10_s": 4588.7,
+            "p90_s": 7431.2,
+            "min_s": 4328.6,
+            "max_s": 7753.3,
+            "boot_ci95_s": [
+              4848.7,
+              7753.3
+            ],
+            "boot_iters": 400,
+            "route_plan": "73DOWN + 347UP",
+            "routes": [
+              "73DOWN",
+              "347UP"
+            ],
+            "plans": [
+              {
+                "route_a_code": "73DOWN",
+                "route_b_code": "347UP",
+                "route_a_id": "2205",
+                "route_b_id": "1840",
+                "board_stop": {
+                  "stop_id": "1436",
+                  "stop_name": "Naraina Depot"
+                },
+                "transfer_stop": {
+                  "stop_id": "826",
+                  "stop_name": "Delhi Secretariat"
+                },
+                "alight_stop": {
+                  "stop_id": "5801",
+                  "stop_name": "Noida Degree College"
+                },
+                "source": "live /api/journeys (2026-11-17, 09:00 IST, max=2)",
+                "n": 6,
+                "p50_s": 6294.5
+              }
+            ],
+            "transfer_stops_top": [
+              {
+                "stop_id": "826",
+                "stop_name": "Delhi Secretariat",
+                "n": 6
+              }
+            ]
           }
         }
       }
@@ -805,8 +1028,8 @@
             "n_trips": 11,
             "min_s": 792.0,
             "median_s": 793.0,
-            "fastest_route_id": "746",
-            "fastest_route_code": "745DOWN"
+            "fastest_route_id": "3433",
+            "fastest_route_code": "336DOWN"
           },
           "mapping": {
             "pair_tier": "A",

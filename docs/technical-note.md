@@ -174,6 +174,26 @@ Our side is the live Cloudflare Worker (`/api/journeys`), not a local copy.
 | Sarojini Nagar → IHC | 33.4 | 16.8 | 1.99× |
 | Kalkaji Mandir → Karol Bagh | 95.5 | 53.1 | 1.80× |
 
+The four pairs without a direct 09:00 bus (AIIMS→Rohini West, New Delhi
+Stn→Gurgaon Border, JNU→Noida Sec 18, Karol Bagh→Noida City Centre) are
+reported with transfer-level observed times; the model serves these via
+the 1-transfer search. Three of the four carry observed transfer-through
+medians from the stage-03 passages (board leg A inside the 09:00 IST
+hour, board leg B within 20 min at the planned transfer stop, same
+per-leg identity and layover rules as the direct scan): AIIMS→Rohini
+West **111.5 min** (n=40, 502DOWN+113UP at GPO Kashmere Gate), New Delhi
+Stn→Gurgaon Border **91.5 min** (n=59, AIRPORT-EXP-04UP + KAROL BAGH TO
+GURGAON at Dhaula Kuan), Karol Bagh→Noida City Centre **104.9 min**
+(n=6, 73DOWN+347UP at Delhi Secretariat). JNU→Noida Sec 18's two planner
+transfer plans (448UP+493UP, recorded from the od_comparison run;
+D-030DOWN+323UP, the live 15:00 option) verify **empty** in the October
+passages — 448UP never touches the JNU stop ring, and 323UP does not
+stop at the planned South Extension transfer in the 09:00–10 h window —
+so the pair is reported with the plans, their n=0 outcome and the
+reason, consistent with the live 09:00 planner returning no 1-transfer
+route for it. Per-pair detail: `docs/pair_baselines.json` (`transfer`
+blocks, added by `validation/pair_baselines.py`).
+
 Across all 20 pairs the bus:car ratio at the 09:00 comparison slot is
 **0.95×–2.23× (median 1.62×)** — physically correct: buses share road space
 with cars and

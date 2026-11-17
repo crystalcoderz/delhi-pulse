@@ -66,6 +66,19 @@ Scheduled ride matching: same trip_id (=> same route), stop_sequence
     increasing, delta > 0, weekday service via calendar flags, origin
     departure inside the IST hour window (e.g. 09:00:00-09:59:59 IST).
 
+Transfer-level observations (A8): pairs with NO direct bus in a dep hour
+    are additionally observed through the planner's own 1-transfer
+    options (TRANSFER_PLANS below — the top /api/journeys responses):
+    board leg A inside the IST hour at the planner's boarding stop (or
+    any origin-ring stop when the planner recorded none), alight at the
+    planned transfer stop, board leg B at the same stop within 20 min,
+    alight at the planned stop (or any destination-ring stop). Per-leg
+    identity rules and the mid-ride gap check as above; the median
+    transfer-through time lands in the pair hour's "transfer" block
+    with "transfer_observed": true. A pair whose every plan verifies
+    empty in the passages keeps transfer_observed false and carries
+    the plans with their n=0 outcome and reason.
+
 Read-only: parquet/CSV inputs are never written; only docs/
 pair_baselines.json is produced. Run:
     .venv/Scripts/python.exe validation/pair_baselines.py [--hours 9]
@@ -97,6 +110,61 @@ MIDRIDE_GAP_S = 1800.     # observed ride dies if a >30min passage gap
                           # occurs between boarding and alighting
 BOOT_ITERS_DEFAULT = 400  # bootstrap resamples for the median CI
 BOOT_SEED = 0.5           # setseed() bound: -1..1
+TRANSFER_MAX_WAIT_S = 1200.  # transfer: leg B boards <= 20 min after leg A
+# A8 transfer plans: the planner's OWN top options for the pairs with no
+# direct 09:00 bus, each verified against the passages in the transfer
+# stage below. Sources: live /api/journeys re-check 2026-11-17
+# (https://delhi-pulse.prayaas.workers.dev, 09:00 IST, max=2) — except
+# JNU -> Noida Sector 18, whose live 09:00 search currently returns no
+# route: its plans come from the planner's recorded response in
+# docs/od_comparison.json (448UP + 493UP) and the live 15:00 IST option
+# (D-030DOWN + 323UP). board/transfer/alight stop ids are the planner's
+# own picks; plans without recorded stops anchor their legs to the
+# pair's 1500 m candidate rings.
+TRANSFER_PLANS = {
+    "AIIMS -> Rohini West": [
+        {"route_a": "502DOWN", "route_b": "113UP",
+         "board_stop": "2997", "transfer_stop": "269", "alight_stop": "492",
+         "source": "live /api/journeys (2026-11-17, 09:00 IST, max=2), "
+                   "option 1"},
+        {"route_a": "442DOWN", "route_b": "113UP",
+         "board_stop": "2829", "transfer_stop": "7586", "alight_stop": "492",
+         "source": "live /api/journeys (2026-11-17, 09:00 IST, max=2), "
+                   "option 2"},
+    ],
+    "New Delhi Railway Stn -> Gurgaon Border": [
+        {"route_a": "AIRPORT-EXP-04UP",
+         "route_b": "KAROL BAGH TO GURGAON UP",
+         "board_stop": "1574", "transfer_stop": "3650",
+         "alight_stop": "6998",
+         "source": "live /api/journeys (2026-11-17, 09:00 IST, max=2)"},
+    ],
+    "JNU -> Noida Sector 18": [
+        {"route_a": "448UP", "route_b": "493UP",
+         "board_stop": None, "transfer_stop": None, "alight_stop": None,
+         "source": "planner response recorded in docs/od_comparison.json "
+                   "(09:00 IST); the live 09:00 edge returns no route as "
+                   "of 2026-11-17, and no stop detail was recorded, so "
+                   "the legs anchor to the pair's 1500 m rings",
+         "note": "verified unobservable in the Oct 2026 passages: 448UP "
+                 "has 0 passages in the 44-stop JNU origin ring and "
+                 "493UP 0 in the destination ring, all month"},
+        {"route_a": "D-030DOWN", "route_b": "323UP",
+         "board_stop": "4621", "transfer_stop": "2841",
+         "alight_stop": "5781",
+         "source": "live /api/journeys (2026-11-17, 15:00 IST, max=2)",
+         "note": "leg 1 is observable (60 09:00-boardings at 4621 reach "
+                 "2841) but 323UP has 0 passages at 2841 in the 09:00-10h "
+                 "window (observed only 06-07h and 11-21h), so no <=20min "
+                 "chain exists; also 0 with the transfer point floated "
+                 "over the route pair's shared stops"},
+    ],
+    "Karol Bagh -> Noida City Centre": [
+        {"route_a": "73DOWN", "route_b": "347UP",
+         "board_stop": "1436", "transfer_stop": "826", "alight_stop": "5801",
+         "source": "live /api/journeys (2026-11-17, 09:00 IST, max=2)"},
+    ],
+}
 R_EARTH_M = 6_371_000.0
 # keep regexes OUT of f-strings — the {2}/{4} below are regex quantifier
 # braces, not format placeholders.
@@ -417,7 +485,10 @@ def main():
                     GROUP BY 1, 2
                 )
                 SELECT COUNT(*), MIN(dur), quantile_cont(dur, 0.5),
-                       arg_min(route_id, dur)
+                       -- struct tie-break (dur, then route_id): plain
+                       -- arg_min flips between tied routes across runs
+                       arg_min(route_id,
+                               struct_pack(d := dur, r := route_id))
                 FROM td
             """).fetchone()
             if sch and sch[0]:
@@ -522,9 +593,312 @@ def main():
           AND c.vehicle_id = v.vehicle_id AND c.route_id = v.route_id
         WHERE v.mid_gap IS NULL OR v.mid_gap <= {MIDRIDE_GAP_S}
     """)
-    n_ok = con.execute("SELECT COUNT(*) FROM rides_ok").fetchone()[0]
+    n_ok = con.execute("SELECT COUNT(*) FROM rides_ok").fetchall()[0][0]
     log(f"[pb] rides surviving the mid-ride layover check: "
         f"{n_ok:,}/{n_chosen:,}")
+
+    # ---- A8: transfer-level observations for the no-direct-bus pairs ----
+    # Each planner transfer plan (TRANSFER_PLANS above) is verified
+    # against the passages: board leg A inside the IST hour at the
+    # plan's boarding stop (or any origin-ring stop when the planner
+    # recorded none), alight at the planned transfer stop, board leg B
+    # at the same stop within TRANSFER_MAX_WAIT_S, alight at the plan's
+    # alighting stop (or any destination-ring stop). Same per-leg
+    # identity rules (day, trip_id, vehicle_id, route_id; stop_seq
+    # increasing; ride <= 120 min) and the same mid-ride gap check as
+    # the direct scan, applied to BOTH legs.
+    transfer_out = {}          # (pair_ix, hour) -> JSON block (CI later)
+    ix2name = {ix: f"{oname} -> {dname}"
+               for ix, (oname, dname, *_r) in enumerate(OD_PAIRS)}
+    tnames = [n for n in TRANSFER_PLANS if n in ix2name.values()]
+    if tnames and hours:
+        code_ids = {}
+        for r in routes_df.itertuples():
+            code_ids.setdefault(str(r.route_short_name), []).append(
+                str(r.route_id))
+        plan_rows, route_rows, board_rows, alight_rows = [], [], [], []
+        for name, plans in TRANSFER_PLANS.items():
+            if name not in tnames:
+                continue
+            ix = next(i for i, n in ix2name.items() if n == name)
+            for pi, p in enumerate(plans):
+                plan_rows.append((pi, ix, p["route_a"], p["route_b"],
+                                  p.get("transfer_stop"), p["source"]))
+                for code in (p["route_a"], p["route_b"]):
+                    ids = code_ids.get(code)
+                    if not ids:
+                        log(f"[pb] WARNING: transfer route code {code!r} "
+                            f"not found in routes.txt ({name})")
+                        continue
+                    route_rows.extend((rid, code) for rid in ids)
+                # leg anchors: the planner's own stops when it recorded
+                # them, else the pair's 1500 m rings
+                b_stops = ([p["board_stop"]] if p.get("board_stop")
+                           else [s for s, _dm in by_key[(ix, "o")]])
+                a_stops = ([p["alight_stop"]] if p.get("alight_stop")
+                           else [s for s, _dm in by_key[(ix, "d")]])
+                board_rows.extend((pi, s) for s in b_stops)
+                alight_rows.extend((pi, s) for s in a_stops)
+        con.register("tplan_df", pd.DataFrame(
+            plan_rows, columns=["plan_ix", "pair_ix", "code_a", "code_b",
+                                "transfer_stop_id", "source"]))
+        con.register("troute_df", pd.DataFrame(
+            sorted(set(route_rows)), columns=["route_id", "route_code"]))
+        con.register("tboard_df", pd.DataFrame(
+            board_rows, columns=["plan_ix", "stop_id"]))
+        con.register("talight_df", pd.DataFrame(
+            alight_rows, columns=["plan_ix", "stop_id"]))
+        hs = ", ".join(str(h) for h in hours)
+        tcodes = sorted({c for r in route_rows for c in [r[1]]})
+        con.execute(f"""
+            CREATE OR REPLACE TEMP TABLE tj AS
+            SELECT regexp_extract(filename, '{DAY_RE}', 1) AS day,
+                   COALESCE(trip_id, '-') AS trip_id,
+                   COALESCE(vehicle_id, '-') AS vehicle_id,
+                   CAST(route_id AS VARCHAR) AS route_id,
+                   stop_id, CAST(stop_seq AS BIGINT) AS stop_seq,
+                   tsec, {h_expr} AS h_ist
+            FROM read_parquet([{f_list}], filename = true)
+            WHERE CAST(route_id AS VARCHAR) IN
+                    (SELECT route_id FROM troute_df)
+              AND {d_expr} BETWEEN 1 AND 5
+              AND day IS NOT NULL AND day <> ''
+        """)
+        n_tj = con.execute("SELECT COUNT(*) FROM tj").fetchone()[0]
+        log(f"[pb] transfer stage: {n_tj:,} weekday passages on the "
+            f"{len(tcodes)} planned routes ({', '.join(tcodes)})")
+
+        con.execute(f"""
+            CREATE OR REPLACE TEMP TABLE tleg1 AS
+            SELECT p.plan_ix, p.pair_ix, b.h_ist AS hour,
+                   b.day, b.trip_id, b.vehicle_id, b.route_id,
+                   b.stop_id AS b_stop, b.tsec AS b_tsec,
+                   t.stop_id AS t_stop, t.tsec AS t_tsec
+            FROM tplan_df p
+            JOIN troute_df ra ON ra.route_code = p.code_a
+            JOIN tboard_df ob ON ob.plan_ix = p.plan_ix
+            JOIN tj b
+              ON  b.route_id = ra.route_id
+              AND b.stop_id = ob.stop_id
+              AND b.h_ist IN ({hs})
+            JOIN tj t
+              ON  t.day = b.day AND t.trip_id = b.trip_id
+              AND t.vehicle_id = b.vehicle_id AND t.route_id = b.route_id
+              AND t.stop_seq > b.stop_seq AND t.tsec > b.tsec
+              AND t.tsec - b.tsec <= {MAX_RIDE_MIN * 60}
+              AND (p.transfer_stop_id IS NULL
+                   OR t.stop_id = p.transfer_stop_id)
+            QUALIFY row_number() OVER (
+                PARTITION BY p.plan_ix, b.h_ist, b.day, b.trip_id,
+                             b.vehicle_id, b.route_id, b.stop_id, t.stop_id
+                ORDER BY t.tsec) = 1
+        """)
+        n_l1 = con.execute("SELECT COUNT(*) FROM tleg1").fetchone()[0]
+        log(f"[pb] transfer leg-1 candidates (board -> transfer): {n_l1:,}")
+
+        con.execute(f"""
+            CREATE OR REPLACE TEMP TABLE tleg2 AS
+            SELECT l.plan_ix, l.pair_ix, l.hour, l.day,
+                   l.trip_id, l.vehicle_id, l.route_id,
+                   l.b_stop, l.b_tsec, l.t_stop, l.t_tsec,
+                   bb.trip_id AS trip2_id, bb.vehicle_id AS veh2_id,
+                   bb.route_id AS route2_id, bb.tsec AS b2_tsec,
+                   a.stop_id AS d_stop, a.tsec AS d_tsec
+            FROM tleg1 l
+            JOIN tplan_df p ON p.plan_ix = l.plan_ix
+            JOIN troute_df rb ON rb.route_code = p.code_b
+            JOIN tj bb
+              ON  bb.day = l.day AND bb.route_id = rb.route_id
+              AND bb.stop_id = l.t_stop
+              AND bb.tsec > l.t_tsec
+              AND bb.tsec - l.t_tsec <= {TRANSFER_MAX_WAIT_S:.0f}
+            JOIN talight_df ad ON ad.plan_ix = l.plan_ix
+            JOIN tj a
+              ON  a.day = bb.day AND a.trip_id = bb.trip_id
+              AND a.vehicle_id = bb.vehicle_id AND a.route_id = bb.route_id
+              AND a.stop_id = ad.stop_id
+              AND a.stop_seq > bb.stop_seq AND a.tsec > bb.tsec
+              AND a.tsec - bb.tsec <= {MAX_RIDE_MIN * 60}
+            QUALIFY row_number() OVER (
+                PARTITION BY l.plan_ix, l.hour, l.day, l.trip_id,
+                             l.vehicle_id, l.route_id, l.b_stop, l.t_stop,
+                             bb.trip_id, bb.vehicle_id, bb.route_id
+                ORDER BY a.tsec) = 1
+        """)
+
+        # a passenger boards the FIRST leg-B departure within the wait cap
+        con.execute(f"""
+            CREATE OR REPLACE TEMP TABLE tjour AS
+            SELECT plan_ix, pair_ix, hour, day, trip_id, vehicle_id,
+                   route_id, b_stop, b_tsec, t_stop, t_tsec,
+                   trip2_id, veh2_id, route2_id, b2_tsec,
+                   d_stop, d_tsec, d_tsec - b_tsec AS dur_s
+            FROM (
+                SELECT *, row_number() OVER (
+                    PARTITION BY plan_ix, hour, day, trip_id, vehicle_id,
+                                 route_id, b_stop
+                    ORDER BY b2_tsec, d_tsec) AS rn
+                FROM tleg2)
+            WHERE rn = 1
+        """)
+
+        # mid-ride layover check per leg (same rule as the direct scan)
+        con.execute("""
+            CREATE OR REPLACE TEMP TABLE tjw AS
+            SELECT day, trip_id, vehicle_id, route_id, tsec,
+                   tsec - LAG(tsec) OVER (
+                       PARTITION BY day, trip_id, vehicle_id, route_id
+                       ORDER BY tsec) AS tgap
+            FROM tj
+        """)
+        con.execute(f"""
+            CREATE OR REPLACE TEMP TABLE tleg_bad AS
+            SELECT 1 AS leg, j.plan_ix, j.hour, j.day, j.trip_id,
+                   j.vehicle_id, j.route_id, j.b_stop,
+                   MAX(w.tgap) AS mid_gap
+            FROM tjour j
+            JOIN tjw w
+              ON  w.day = j.day AND w.trip_id = j.trip_id
+              AND w.vehicle_id = j.vehicle_id AND w.route_id = j.route_id
+              AND w.tsec > j.b_tsec AND w.tsec < j.t_tsec
+            GROUP BY 1, 2, 3, 4, 5, 6, 7, 8
+            UNION ALL
+            SELECT 2 AS leg, j.plan_ix, j.hour, j.day, j.trip_id,
+                   j.vehicle_id, j.route_id, j.b_stop,
+                   MAX(w.tgap) AS mid_gap
+            FROM tjour j
+            JOIN tjw w
+              ON  w.day = j.day AND w.trip_id = j.trip2_id
+              AND w.vehicle_id = j.veh2_id AND w.route_id = j.route2_id
+              AND w.tsec > j.b2_tsec AND w.tsec < j.d_tsec
+            GROUP BY 1, 2, 3, 4, 5, 6, 7, 8
+        """)
+        con.execute(f"""
+            CREATE OR REPLACE TEMP TABLE tjour_ok AS
+            SELECT j.* FROM tjour j
+            ANTI JOIN tleg_bad b1
+              ON  b1.leg = 1 AND b1.plan_ix = j.plan_ix
+              AND b1.hour = j.hour AND b1.day = j.day
+              AND b1.trip_id = j.trip_id AND b1.vehicle_id = j.vehicle_id
+              AND b1.route_id = j.route_id AND b1.b_stop = j.b_stop
+              AND b1.mid_gap > {MIDRIDE_GAP_S:.0f}
+            ANTI JOIN tleg_bad b2
+              ON  b2.leg = 2 AND b2.plan_ix = j.plan_ix
+              AND b2.hour = j.hour AND b2.day = j.day
+              AND b2.trip_id = j.trip_id AND b2.vehicle_id = j.vehicle_id
+              AND b2.route_id = j.route_id AND b2.b_stop = j.b_stop
+              AND b2.trip_id = j.trip2_id AND b2.vehicle_id = j.veh2_id
+              AND b2.route_id = j.route2_id
+              AND b2.mid_gap > {MIDRIDE_GAP_S:.0f}
+        """)
+        n_j = con.execute("SELECT COUNT(*) FROM tjour").fetchone()[0]
+        n_jok = con.execute("SELECT COUNT(*) FROM tjour_ok").fetchone()[0]
+        log(f"[pb] transfer journeys surviving the layover check: "
+            f"{n_jok:,}/{n_j:,}")
+
+        trows = con.execute("""
+            SELECT pair_ix, hour, COUNT(*),
+                   quantile_cont(dur_s, 0.5), quantile_cont(dur_s, 0.1),
+                   quantile_cont(dur_s, 0.9), MIN(dur_s), MAX(dur_s)
+            FROM tjour_ok GROUP BY 1, 2
+        """).fetchall()
+        pmap = {(r[0], r[1], r[2]): (r[3], r[4])
+                for r in con.execute("""
+                    SELECT plan_ix, pair_ix, hour, COUNT(*),
+                           quantile_cont(dur_s, 0.5)
+                    FROM tjour_ok GROUP BY 1, 2, 3
+                """).fetchall()}
+        def sname(sid):
+            return name_of.get(str(sid), str(sid))
+
+        tstop_map = {}
+        for r in con.execute("""
+            SELECT pair_ix, hour, t_stop, COUNT(*) AS n
+            FROM tjour_ok GROUP BY 1, 2, 3
+            QUALIFY row_number() OVER (
+                PARTITION BY pair_ix, hour ORDER BY COUNT(*) DESC) <= 2
+        """).fetchall():
+            tstop_map.setdefault((r[0], r[1]), []).append(
+                {"stop_id": str(r[2]), "stop_name": sname(r[2]),
+                 "n": int(r[3])})
+
+        def tplan_entry(pi, p, pix, h):
+            """JSON for one planner transfer plan at one pair x hour."""
+            pn, pp50 = pmap.get((pi, pix, h), (0, None))
+            entry = {
+                "route_a_code": p["route_a"],
+                "route_b_code": p["route_b"],
+                "route_a_id": (code_ids.get(p["route_a"]) or [None])[0],
+                "route_b_id": (code_ids.get(p["route_b"]) or [None])[0],
+                "board_stop": ({"stop_id": p["board_stop"],
+                                "stop_name": sname(p["board_stop"])}
+                               if p.get("board_stop") else None),
+                "transfer_stop": (
+                    {"stop_id": p["transfer_stop"],
+                     "stop_name": sname(p["transfer_stop"])}
+                    if p.get("transfer_stop") else None),
+                "alight_stop": ({"stop_id": p["alight_stop"],
+                                 "stop_name": sname(p["alight_stop"])}
+                                if p.get("alight_stop") else None),
+                "source": p["source"],
+                "n": int(pn),
+                "p50_s": round(float(pp50), 1) if pn else None,
+            }
+            if p.get("note"):
+                entry["note"] = p["note"]
+            return entry
+
+        for (pix, h, n, p50, p10, p90, dmin, dmax) in trows:
+            name = ix2name[pix]
+            plans_json, top_entry = [], None
+            for pi, p in enumerate(TRANSFER_PLANS[name]):
+                entry = tplan_entry(pi, p, pix, h)
+                plans_json.append(entry)
+                if top_entry is None or entry["n"] > top_entry["n"]:
+                    top_entry = entry
+            transfer_out[(pix, h)] = {
+                "n": int(n),
+                "p50_s": round(float(p50), 1),
+                "p10_s": round(float(p10), 1),
+                "p90_s": round(float(p90), 1),
+                "min_s": round(float(dmin), 1),
+                "max_s": round(float(dmax), 1),
+                "boot_ci95_s": None,   # filled after the direct loop so
+                                       # the direct pairs' fixed-seed
+                                       # random() sequence is untouched
+                "boot_iters": int(a.boot_iters),
+                "route_plan": (f"{top_entry['route_a_code']} + "
+                               f"{top_entry['route_b_code']}"),
+                "routes": [top_entry["route_a_code"],
+                           top_entry["route_b_code"]],
+                "plans": plans_json,
+                "transfer_stops_top": tstop_map.get((pix, h), []),
+            }
+            log(f"[pb] transfer observed {name} @{h}: n={n}, "
+                f"p50 {p50 / 60:.1f}m via "
+                f"{transfer_out[(pix, h)]['route_plan']}")
+
+        # pairs/hours whose plans verified EMPTY still get an explicit
+        # transfer block (transfer_observed stays false; the per-plan
+        # notes carry the verified reason)
+        covered = {(r[0], r[1]) for r in trows}
+        for name in tnames:
+            pix = next(i for i, nm in ix2name.items() if nm == name)
+            for h in hours:
+                if (pix, h) in covered:
+                    continue
+                transfer_out[(pix, h)] = {
+                    "n": 0,
+                    "note": ("no observed transfer journey: every "
+                             "planner plan below verified empty in the "
+                             "passages (see per-plan notes)"),
+                    "boot_ci95_s": None,
+                    "boot_iters": int(a.boot_iters),
+                    "plans": [tplan_entry(pi, p, pix, h)
+                              for pi, p in enumerate(TRANSFER_PLANS[name])],
+                }
+                log(f"[pb] transfer observed {name} @{h}: n=0 "
+                    f"(plans verified empty)")
 
     # ---- final observed stats per pair x hour ----------------------------
     for ix, (oname, dname, *_rest) in enumerate(OD_PAIRS):
@@ -593,6 +967,15 @@ def main():
                                       "share": round(int(tr[1]) / n, 3)})
             hour_out["top_route"] = top_route
 
+            # A8: pairs with no direct observed ride carry their
+            # transfer-level observation alongside the null direct block
+            # (transfer_observed stays false when every plan verified
+            # empty — the block then documents why)
+            if (ix, h) in transfer_out:
+                blk = transfer_out[(ix, h)]
+                hour_out["transfer_observed"] = bool(blk["n"])
+                hour_out["transfer"] = blk
+
         h0 = str(hours[0])
         r0 = pair_out["dep_hours"][h0]
         obs, sch, top = (r0["observed_ride"], r0["scheduled"],
@@ -615,10 +998,43 @@ def main():
             f" tier={r0['mapping']['pair_tier']}")
         log(f"    {obs_txt} | {top_txt} | {sch_txt}")
 
+    # ---- transfer bootstrap CIs (kept AFTER the direct loop so the ------
+    # direct pairs' fixed-seed random() sequence stays byte-identical)
+    for (pix, h), block in sorted(transfer_out.items()):
+        if not block["n"]:
+            continue
+        ci = con.execute(f"""
+            WITH arr AS (
+                SELECT list(dur_s ORDER BY dur_s) AS xs,
+                       COUNT(*) AS nsz
+                FROM tjour_ok
+                WHERE pair_ix = {pix} AND hour = {h}
+            ), picks AS (
+                SELECT r.i AS rep,
+                       list_extract(a.xs,
+                           (random() * a.nsz)::INTEGER + 1) AS dur_s
+                FROM arr a, range(1, {a.boot_iters + 1}) r(i),
+                     generate_series(1, a.nsz) g(k)
+            ), boots AS (
+                SELECT rep, quantile_cont(dur_s, 0.5) AS m
+                FROM picks GROUP BY rep
+            )
+            SELECT quantile_cont(m, 0.025), quantile_cont(m, 0.975)
+            FROM boots
+        """).fetchone()
+        block["boot_ci95_s"] = [round(float(ci[0]), 1),
+                                round(float(ci[1]), 1)]
+        log(f"  {ix2name[pix]} @{h} (transfer): "
+            f"p50 {block['p50_s'] / 60:.1f}m (n={block['n']}, CI "
+            f"{ci[0] / 60:.1f}-{ci[1] / 60:.1f}m) "
+            f"via {block['route_plan']}")
+
     # ---- output -----------------------------------------------------------
     n_obs = sum(1 for r in results.values()
                 if any(v["observed_ride"]["n"]
                        for v in r["dep_hours"].values()))
+    n_trans = len({ix for (ix, _h), blk in transfer_out.items()
+                   if blk["n"]})
     weekday_days = []
     for f in files:
         stem = f.stem.replace("passages_", "")
@@ -638,7 +1054,9 @@ def main():
                             "passages) and GTFS timetable minima for the "
                             "20 OD pairs. Both are origin-stop to "
                             "destination-stop in-vehicle times: no access "
-                            "walk, no wait."),
+                            "walk, no wait. Pairs with no direct bus in "
+                            "the dep hour carry a transfer-level observed "
+                            "time instead (see transfer_observed)."),
             "od_pairs": len(OD_PAIRS),
             "dep_hours_ist": hours,
             "filters": {
@@ -677,6 +1095,35 @@ def main():
                 "tier_a_min_obs": PAIR_TIER_A_N,
                 "candidate_radius_m": CAND_RADIUS_M,
             },
+            "transfer_observed": {
+                "pairs": sorted(TRANSFER_PLANS),
+                "definition": ("observed transfer-through time for the "
+                               "pairs with no direct bus in the dep hour: "
+                               "board leg A inside the IST hour at the "
+                               "planner's boarding stop (or any "
+                               "origin-ring stop, <= 1500 m, when the "
+                               "planner recorded none), alight at the "
+                               "planned transfer stop, board leg B at "
+                               "the same stop within 20 min, alight at "
+                               "the planned alighting stop (or any "
+                               "destination-ring stop). Per-leg "
+                               "identity rules and the mid-ride gap "
+                               "check as the direct scan; the reported "
+                               "observed bus time for these pairs is "
+                               "this transfer-through median. A pair "
+                               "whose every plan verifies empty in the "
+                               "passages keeps transfer_observed false "
+                               "and records the plans with their n=0 "
+                               "outcome and reason"),
+                "plans_source": ("the planner's own /api/journeys top "
+                                 "options: live edge re-check 2026-11-17 "
+                                 "(09:00 IST, max=2); JNU -> Noida "
+                                 "Sector 18 has no live 09:00 option, "
+                                 "its plans come from the recorded "
+                                 "od_comparison.json response and the "
+                                 "live 15:00 IST option"),
+                "max_transfer_wait_s": TRANSFER_MAX_WAIT_S,
+            },
             "stats": {
                 "median": "quantile_cont (linear interpolation)",
                 "bootstrap_ci": (f"{a.boot_iters} resamples of the "
@@ -693,7 +1140,14 @@ def main():
         "pairs": results,
     }
     OUT.write_text(json.dumps(out, indent=2) + "\n")
-    log(f"\n[pb] pairs with observed rides: {n_obs}/{len(OD_PAIRS)}")
+    unobs_trans = sorted(
+        ix2name[ix] for (ix, _h), blk in transfer_out.items()
+        if not blk["n"])
+    log(f"\n[pb] pairs with observed rides: {n_obs} direct + "
+        f"{n_trans} transfer = {n_obs + n_trans}/{len(OD_PAIRS)}")
+    if unobs_trans:
+        log(f"[pb] transfer plans verified empty (pairs stay unobserved): "
+            f"{'; '.join(unobs_trans)}")
     log(f"[pb] saved -> {OUT}")
     con.close()
 
