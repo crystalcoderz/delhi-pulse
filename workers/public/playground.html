@@ -1,0 +1,75 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>Delhi Pulse &mdash; API playground</title>
+<meta name="description" content="Try every Delhi Pulse API endpoint in the browser: journeys with ETA bands, stop search, route speeds and the citywide speed curve."/>
+<meta name="theme-color" content="#ffffff"/>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect width='16' height='16' rx='3' fill='%2314211b'/%3E%3Ccircle cx='8' cy='8' r='3.5' fill='%23ffb000'/%3E%3C/svg%3E"/>
+<link rel="preload" href="vendor/fonts/barlow-condensed-700.woff2" as="font" type="font/woff2" crossorigin/>
+<link href="app.css" rel="stylesheet"/>
+<script src="shared.js" defer></script>
+<script src="playground.js" defer></script>
+</head>
+<body>
+<a class="skip-link" href="#response">Skip to the response</a>
+
+<header class="bar">
+  <a class="brand" href="./" aria-label="Delhi Pulse home"><span class="plate plate-brand">Delhi Pulse</span></a>
+  <nav class="views" aria-label="Views">
+    <a href="./">Planner</a>
+    <a href="pulse.html">City Pulse</a>
+    <a href="playground.html" aria-current="page">API</a>
+  </nav>
+</header>
+
+<main class="pg">
+  <section class="panel" id="panel" aria-labelledby="pgTitle">
+    <div class="pulse-intro">
+      <h1 class="pulse-title" id="pgTitle">API playground</h1>
+      <p class="lede">Every number in the planner comes from these endpoints. Pick one, change its parameters and send it.</p>
+      <p class="base-url">Base URL <b id="baseUrl"></b>. Every endpoint is a GET that returns JSON.</p>
+    </div>
+    <div class="chips" id="epChips" role="group" aria-label="Endpoints"></div>
+    <div class="ep">
+      <div class="ep-head">
+        <span class="plate plate-sm">GET</span>
+        <h2 class="ep-path" id="epPath"></h2>
+        <span class="ep-tag" id="epTag" hidden>Billed Google call</span>
+      </div>
+      <div id="epBody"></div>
+    </div>
+  </section>
+
+  <section class="pg-out" id="response" aria-labelledby="resTitle" tabindex="-1">
+    <h2 class="sr-only" id="resTitle">Request and response</h2>
+
+    <div class="request">
+      <div class="req-line">
+        <span class="plate plate-sm">GET</span>
+        <p class="req-url" id="reqUrl"></p>
+      </div>
+      <div class="chips">
+        <button type="button" class="chip" id="copyUrl">Copy URL</button>
+        <button type="button" class="chip" id="copyCurl">Copy curl</button>
+        <a class="chip" id="openRaw" href="#" target="_blank" rel="noopener">Open raw response</a>
+      </div>
+    </div>
+
+    <div class="res-meta" id="resMeta" role="status"></div>
+
+    <div class="tabs-row">
+      <div class="tabs" role="tablist" aria-label="Response views">
+        <button type="button" class="tab" role="tab" id="tabPreview" aria-controls="panePreview" aria-selected="true">Preview</button>
+        <button type="button" class="tab" role="tab" id="tabJson" aria-controls="paneJson" aria-selected="false" tabindex="-1">JSON</button>
+      </div>
+      <button type="button" class="text-btn" id="copyJson">Copy JSON</button>
+    </div>
+
+    <div class="pane" id="panePreview" role="tabpanel" aria-labelledby="tabPreview" tabindex="0"></div>
+    <div class="pane" id="paneJson" role="tabpanel" aria-labelledby="tabJson" tabindex="0" hidden></div>
+  </section>
+</main>
+</body>
+</html>

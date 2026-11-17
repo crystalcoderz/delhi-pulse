@@ -1,15 +1,11 @@
 (() => {
   'use strict';
 
-  const { API, COLORS, REDUCED_MOTION, h, getJSON, createMap, ramp, colorRamp } = window.DelhiPulse;
+  const { API, COLORS, REDUCED_MOTION, h, getJSON, createMap, sketchMap, ramp, colorRamp } = window.DelhiPulse;
   const $ = id => document.getElementById(id);
 
   const hourInput = $('hour');
   const daySelect = $('day');
-  // The markup ships a 5-22 daytime slider, but the model and /geo cover the
-  // full 24-hour day; widen it here before the bounds are read below.
-  hourInput.min = '0';
-  hourInput.max = '23';
   const MIN_HOUR = Number(hourInput.min);
   const MAX_HOUR = Number(hourInput.max);
   const PLAY_INTERVAL_MS = 1100;
@@ -23,11 +19,28 @@
   let popup = null;
   let map = null;
   let mapFailed = false;
+  // Stands in for the street map when Google Maps cannot start.
+  let sketch = null;
+  let lastGeo = null;
+  // A fixed frame around Delhi, so the schematic does not jump as the route set changes by hour.
+  const SKETCH_FRAME = [[76.84, 28.4], [77.35, 28.88]];
+  const SKETCH_ZOOM = 10.5;
 
   const mapReady = new Promise(resolve => {
     createMap('map', { center: [77.21, 28.62], zoom: 10 }).then(ready => {
       if (!ready) {
         mapFailed = true;
+        const box = $('map');
+        box.parentElement.classList.add('is-sketch');
+        sketch = sketchMap(box, {
+          label: 'Schematic of Delhi bus routes colored by observed speed',
+          caption: 'Street map unavailable here. Routes are drawn without it.',
+        });
+        $('lineHint').textContent = 'Slower routes are drawn thicker.';
+        if (lastGeo) {
+          drawSketch(lastGeo.fc);
+          showSummary(lastGeo.fc, lastGeo.hour);
+        }
         return;
       }
       map = ready;
@@ -46,6 +59,20 @@
     const far = ramp(speed, [[8, 2.6], [20, 1.4], [32, 0.8]]);
     const near = ramp(speed, [[8, 7], [20, 4.5], [32, 3]]);
     return ramp(zoom, [[9, far], [13, near]]);
+  }
+
+  function drawSketch(fc) {
+    sketch.set(fc.features.map(feature => {
+      const props = feature.properties || {};
+      const n = Number(props.speed_kmh);
+      const speed = Number.isFinite(n) ? n : 20;
+      return {
+        path: feature.geometry.coordinates,
+        color: colorRamp(speed, SPEED_COLORS),
+        width: lineWidth(speed, SKETCH_ZOOM),
+        opacity: props.source === 'route-avg' ? 0.3 : 0.8,
+      };
+    }), SKETCH_FRAME);
   }
 
   const hourLabel = hour => String(hour).padStart(2, '0') + ':00';
@@ -158,6 +185,8 @@
       });
       // Zero baseline, so bar heights compare honestly.
       bar.style.height = (known ? Math.max(8, (value / peak) * 100) : 8) + '%';
+      // Same ramp as the map, so the curve and the routes read as one scale.
+      if (known) bar.style.background = colorRamp(value, SPEED_COLORS);
       bar.addEventListener('click', () => {
         setPlaying(false);
         hourInput.value = String(hour);
@@ -193,7 +222,11 @@
     clearTimeout(slow);
     if (seq !== refreshSeq) return;
     if (!fc) return setStatus('Route speeds could not be loaded for this hour. The previous hour is still shown.');
-    if (mapFailed) return showSummary(fc, hour);
+    lastGeo = { fc, hour };
+    if (mapFailed) {
+      drawSketch(fc);
+      return showSummary(fc, hour);
+    }
 
     await mapReady;
     if (seq !== refreshSeq) return;
