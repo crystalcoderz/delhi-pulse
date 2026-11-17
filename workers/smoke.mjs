@@ -5,7 +5,8 @@
  * Reads the deployed Worker and asserts the API invariants a judge or a
  * client depends on:
  *
- *   - options are sorted by total_min and unique per route sequence (C1)
+ *   - options are sorted by EXPERIENCE SCORE (total + 5/transfer + walk
+ *     penalty — C4) and unique per route sequence (C1)
  *   - eta_p10_min <= eta_p50_min <= eta_p90_min, and p50 == total_min (A3/D2)
  *   - arrive is after board_at, legs are non-empty, transfer options carry
  *     a transfer stop (C5 contract)
@@ -110,12 +111,15 @@ function assertOptions(body, label, maxAllowed = 6) {
     `${label}: ${body.options.length} options > clamp ${maxAllowed}`);
   let prev = -Infinity;
   const seen = new Set();
+  const score = o => o.total_min
+    + 5 * (o.transfers || 0)
+    + 0.5 * Math.max(0, (o.walk_o + o.walk_d) - 10);   // C4 ranking
   for (const [i, o] of body.options.entries()) {
     const at = `${label} option[${i}]`;
     assert(isNum(o.total_min), `${at}: total_min missing`);
-    assert(o.total_min >= prev - 1e-9,
-      `${at}: total_min ${o.total_min} < previous ${prev} (not sorted)`);
-    prev = o.total_min;
+    assert(score(o) >= prev - 1e-9,
+      `${at}: score ${score(o)} < previous ${prev} (not score-sorted)`);
+    prev = score(o);
 
     assert(isNum(o.eta_p10_min), `${at}: eta_p10_min missing`);
     assert(isNum(o.eta_p50_min), `${at}: eta_p50_min missing`);
