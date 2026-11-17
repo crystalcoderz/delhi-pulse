@@ -182,8 +182,8 @@ async function main() {
     assert(status.ok === true, "ok is not true");
     assert(status.routes > 2000, `routes ${status.routes}`);
     assert(status.edges > 0, `edges ${status.edges} (A2/traversal model)`);
-    assert(status.live && status.live.vehicles === 0,
-      "live.vehicles contract changed");
+    assert(typeof status.live?.vehicles === "number" && status.live.vehicles >= 0,
+      "live.vehicles missing or negative");   // A6: now real, not hardcoded zero
   });
 
   // 3. pulse
