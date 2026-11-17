@@ -364,28 +364,40 @@ def _speed_chain(route_id, hour, day=None, dow=None):
             or CHR.get(hour) or CH.get(hour) or CH_DEFAULT)
 
 
-def _blend_window(route_id, dist_m, hist_s, win):
-    """B3-lite: weigh an observed window speed against the historical chain.
+def blend_ratio(hist_s, win_sp, hist_sp, n):
+    """B3, pure: pair-count-weighted clamped-ratio blend of a window speed
+    onto historical leg seconds. No model/window state, so it unit-tests
+    without loading parquet or the live store.
 
-    The window is a RATIO on the historical timing (0.5..2.0) rather than a
-    replacement, weighted by its pair count: alpha = min(0.8, n/(n+30)). The
-    blend happens in speed space, so a fast 3-pair window can no longer time a
-    whole route on three pings.
+    ratio = clamp(win_sp / hist_sp, 0.5, 2.0); alpha = min(0.8, n / (n + 30));
+    returns hist_s / (1 + alpha * (ratio - 1)). Blending in seconds space is
+    the linear speed blend (1 - alpha) * hist_sp + alpha * win_sp, so a 3-pair
+    window moves the estimate ~9% (never the hard switch it used to be) and a
+    300-pair window moves it 80% toward the live speed. Returns hist_s
+    unchanged when any input is missing or non-positive.
     """
+    if not hist_s or hist_s <= 0:
+        return hist_s
+    if not win_sp or win_sp <= 0 or not n or not hist_sp or hist_sp <= 0:
+        return hist_s
+    ratio = min(2.0, max(0.5, float(win_sp) / float(hist_sp)))
+    alpha = min(0.8, float(n) / (float(n) + 30.0))
+    return hist_s / (1.0 + alpha * (ratio - 1.0))
+
+
+def _blend_window(route_id, dist_m, hist_s, win):
+    """B3: weigh an observed window speed against the historical chain — a
+    clamped, pair-count-weighted RATIO (see blend_ratio for the math), never a
+    replacement of the 850k-cell edge model. win: {route_id: (speed_kmh,
+    n_pairs)} from LiveLayer.window_speeds() / _window_speeds()."""
     if not win or hist_s <= 0:
         return hist_s
     obs = win.get(route_id)
     if not obs:
         return hist_s
     wsp, n = obs
-    if not wsp or wsp <= 0 or not n:
-        return hist_s
     hist_sp = dist_m * 3.6 / hist_s
-    if hist_sp <= 0:
-        return hist_s
-    ratio = min(2.0, max(0.5, float(wsp) / hist_sp))
-    alpha = min(0.8, float(n) / (float(n) + 30.0))
-    return hist_s / (1.0 + alpha * (ratio - 1.0))
+    return blend_ratio(hist_s, wsp, hist_sp, n)
 
 
 def leg_seconds(route_id, a, b, dist_m, hour, day=None, win=None, dow=None):
@@ -702,7 +714,16 @@ def journeys(fromq: str = Query(..., alias="from"),
             return dict(options=[],
                         note="no route found via max 1 transfer in range",
                         replay_day=strday, replay_mode=replay_mode)
-        opts.sort(key=lambda x: x["total_min"])
+        # C4 (local parity with the Worker's score()): rank on an internal
+        # score that prices transfers (5 min each) and long walks (0.5 min
+        # per walk-minute past 10 total) on top of total time; total_min
+        # stays the reported headline number, so the fastest raw option may
+        # not rank first.
+        def _score(op):
+            return (op["total_min"]
+                    + 5 * (op.get("transfers") or 0)
+                    + 0.5 * max(0.0, (op["walk_o"] + op["walk_d"]) - 10))
+        opts.sort(key=_score)
         seen, picked = set(), []
         for op in opts:
             if op["_key"] in seen:
