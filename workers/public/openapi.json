@@ -1,0 +1,768 @@
+{
+  "openapi": "3.1.0",
+  "jsonSchemaDialect": "https://json-schema.org/draft/2020-12/schema",
+  "info": {
+    "title": "Delhi Pulse Edge API",
+    "summary": "Delhi DTC bus journey planner + city pulse, served from Cloudflare Workers",
+    "version": "1.0.0",
+    "description": "Deployed read API for Delhi Pulse (edge Worker). A travel-time model trained on 31 days of October 2026 DTC bus GPS (853,480 (route, edge, hour) quantile cells, 2,245 served routes) answers journey searches with walk/wait/ride legs, transfers, ETA bands (p10/p50/p90) and quieter-hour comparisons. The API contract is frozen per docs/v0-brief.md §3.1-§3.4: fields may be ADDED, never renamed or removed.\n\nThe read API is CORS `*`. The three billed Google proxies (`/api/places/autocomplete`, `/api/places/resolve`, `/api/gmaps-drive`) are origin-gated and intentionally NOT part of this public spec.\n\nThis document is served live at `/openapi.json` and `/api/openapi.json` (OpenAPI 3.1)."
+  },
+  "servers": [
+    {
+      "url": "https://delhi-pulse.prayaas.workers.dev",
+      "description": "Production edge deployment (Cloudflare Workers, APAC)"
+    }
+  ],
+  "tags": [
+    { "name": "system", "description": "Health, status and spec endpoints" },
+    { "name": "journeys", "description": "Journey search (walk -> wait -> ride legs, transfers, ETA bands)" },
+    { "name": "stops", "description": "DTC stop lookup (6,862 stops)" },
+    { "name": "pulse", "description": "City speed curve and per-route geo data" },
+    { "name": "ui-config", "description": "Browser basemap configuration for the Google Maps JS UI" }
+  ],
+  "paths": {
+    "/api/health": {
+      "get": {
+        "tags": ["system"],
+        "operationId": "getHealth",
+        "summary": "Liveness + model asset shape",
+        "description": "Confirms the model asset loaded and reports its size. Cheap (served from the per-isolate model cache).",
+        "responses": {
+          "200": {
+            "description": "Model loaded",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Health" },
+                "example": {
+                  "ok": true,
+                  "stops": 6862,
+                  "patterns": 3498,
+                  "routes": 2245
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/status": {
+      "get": {
+        "tags": ["system"],
+        "operationId": "getStatus",
+        "summary": "Model + edge-cell + live counters",
+        "description": "What the planner UI header renders. `edges` is the number of trained (route, edge, hour) quantile cells shipped in the model asset; `live` is the edge's (honest) zero-vehicle placeholder - live GTFS-RT runs on the full local API only.",
+        "responses": {
+          "200": {
+            "description": "Current deployment counters",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Status" },
+                "example": {
+                  "ok": true,
+                  "routes": 2245,
+                  "patterns": 3498,
+                  "edges": 853480,
+                  "live": { "vehicles": 0, "url": false, "n_fetch": 0 },
+                  "note": "edge deployment"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/journeys": {
+      "get": {
+        "tags": ["journeys"],
+        "operationId": "searchJourneys",
+        "summary": "Journey search: walk -> wait -> ride (optionally one transfer)",
+        "description": "The heart of the app. `from`/`to` accept `lat,lng` coordinates, `stop:<id>` exact stop ids (no walk-time error), or plain text resolved with scored fuzzy stop matching (A7). Returns up to `max` options with full legs, ETA p10/p50/p90 bands and the quieter-hour (`usual_*`) comparison.\n\nRanking note (C4): options are ranked by an internal score `total_min + 5*transfers + 0.5*max(0, walk_o + walk_d - 10)` - a 55-min zero-transfer option outranks a 54-min option with 2 transfers and a long walk. `total_min` itself is unchanged and remains the reported headline number.\n\n`depart` is ISO 8601; a literal space works in place of `%2B` for the `+`, naive local times read as IST, and unparseable values return 400 with a hint. `asOf` is accepted for contract parity but the edge only answers with the pooled full-month model (time-travel replay is served by the full local API).",
+        "parameters": [
+          {
+            "name": "from",
+            "in": "query",
+            "required": true,
+            "description": "Origin: `lat,lng` | `stop:<id>` | plain-text stop name.",
+            "schema": { "type": "string" },
+            "examples": {
+              "coords": { "value": "28.6673,77.2285" },
+              "stop": { "value": "stop:4109" },
+              "text": { "value": "Kashmere Gate" }
+            }
+          },
+          {
+            "name": "to",
+            "in": "query",
+            "required": true,
+            "description": "Destination, same accepted forms as `from`.",
+            "schema": { "type": "string" },
+            "example": "28.5494,77.2514"
+          },
+          {
+            "name": "depart",
+            "in": "query",
+            "required": false,
+            "description": "Departure instant, ISO 8601 (default: now). Unparseable values -> 400 with a hint.",
+            "schema": { "type": "string", "examples": ["2026-11-18T09:00:00+05:30"] }
+          },
+          {
+            "name": "max",
+            "in": "query",
+            "required": false,
+            "description": "Maximum options returned. Default 3, clamped to 1..6.",
+            "schema": { "type": "integer", "minimum": 1, "maximum": 6, "default": 3 }
+          },
+          {
+            "name": "asOf",
+            "in": "query",
+            "required": false,
+            "description": "Time-travel replay instant (LOCAL API ONLY). The edge accepts it and prepends the note \"asOf time-travel replay is served by the full local API; the edge serves the pooled full-month model\".",
+            "schema": { "type": "string" }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Journey options (possibly empty, with an explanatory `note`)",
+            "headers": {
+              "cache-control": {
+                "description": "`public, max-age=300` when a future `depart` was given, `no-store` otherwise (D9).",
+                "schema": { "type": "string" }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/JourneysResponse" },
+                "examples": {
+                  "kashmere-gate-to-nehru-place": {
+                    "summary": "Direct option with route_code + usual-hour fields (captured live, full-month model, 09:00 IST)",
+                    "value": {
+                      "options": [
+                        {
+                          "transfers": 0,
+                          "total_min": 69.9,
+                          "walk_o": 1.8,
+                          "walk_d": 3.9,
+                          "wait_min": 6.2,
+                          "ride_min": 58,
+                          "route_id": "1920",
+                          "route_code": "425UP",
+                          "route_name": "425UP",
+                          "board": "4109",
+                          "board_name": "ISBT Kashmere Gate Terminal",
+                          "alight": "2559",
+                          "alight_name": "Nehru Place",
+                          "board_at": "2026-11-18T03:37:59.931Z",
+                          "arrive": "2026-11-18T04:39:52.258Z",
+                          "legs": [
+                            {
+                              "type": "walk",
+                              "minutes": 1.8,
+                              "coords": [[28.6673, 77.2285], [28.66696, 77.227456]]
+                            },
+                            {
+                              "type": "bus",
+                              "minutes": 58,
+                              "route": "425UP",
+                              "stops": [[28.66696, 77.227456], [28.548576, 77.249133]]
+                            },
+                            {
+                              "type": "walk",
+                              "minutes": 3.9,
+                              "coords": [[28.548576, 77.249133], [28.5494, 77.2514]]
+                            }
+                          ],
+                          "eta_p50_min": 69.9,
+                          "eta_p10_min": 54.2,
+                          "eta_p90_min": 90.2,
+                          "confidence": "edge-route-hour",
+                          "usual_p50_min": 78.6,
+                          "usual_hour_ist": 11,
+                          "rush_effect_min": -8.8
+                        }
+                      ],
+                      "note": null
+                    }
+                  },
+                  "zero-options": {
+                    "summary": "Empty result keeps HTTP 200 with a note",
+                    "value": {
+                      "options": [],
+                      "note": "no route found within 1 transfer"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Unparseable `depart` (or out-of-region coordinates)",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Error" },
+                "example": {
+                  "error": "depart cannot be parsed: \"2026-11-17 0830\"",
+                  "hint": "use ISO 8601, e.g. 2026-11-17T08:30:00+05:30"
+                }
+              }
+            }
+          },
+          "500": { "$ref": "#/components/responses/InternalError" }
+        }
+      }
+    },
+    "/api/stops/search": {
+      "get": {
+        "tags": ["stops"],
+        "operationId": "searchStops",
+        "summary": "Fuzzy stop-name search (top 10)",
+        "description": "Scored fuzzy match (A7): substring 3x + all-token-prefix 2x + token-overlap 1x; an exact name match short-circuits everything. `q` shorter than 2 characters returns `[]` (D6).",
+        "parameters": [
+          {
+            "name": "q",
+            "in": "query",
+            "required": true,
+            "description": "Query, minimum 2 characters (case-insensitive).",
+            "schema": { "type": "string", "minLength": 2 },
+            "example": "kashmere"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Up to 10 stops, best match first (example truncated to 3 of 10)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": { "$ref": "#/components/schemas/StopSearchHit" }
+                },
+                "example": [
+                  { "stop_id": "267", "name": "ISBT Kashmere Gate", "lat": 28.669372, "lng": 77.227137, "score": 6 },
+                  { "stop_id": "4109", "name": "ISBT Kashmere Gate Terminal", "lat": 28.66696, "lng": 77.227456, "score": 6 },
+                  { "stop_id": "9723", "name": "ISBT Kashmere Gate Ring Road", "lat": 28.668874, "lng": 77.232027, "score": 6 }
+                ]
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/stops/nearby": {
+      "get": {
+        "tags": ["stops"],
+        "operationId": "nearbyStops",
+        "summary": "Stops nearest a coordinate",
+        "description": "Up to 6 stops sorted by crow-fly distance, filtered to `radius`. Walk minutes use the planner's straight-line x1.3 / 80 m-per-min walk model. Coordinates outside the Delhi region return 400.",
+        "parameters": [
+          {
+            "name": "lat",
+            "in": "query",
+            "required": true,
+            "schema": { "type": "number" },
+            "example": 28.6428
+          },
+          {
+            "name": "lng",
+            "in": "query",
+            "required": true,
+            "schema": { "type": "number" },
+            "example": 77.2211
+          },
+          {
+            "name": "radius",
+            "in": "query",
+            "required": false,
+            "description": "Metres. Default 2000, clamped 50..20000.",
+            "schema": { "type": "number", "default": 2000, "minimum": 50, "maximum": 20000 },
+            "example": 600
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Nearby stops, nearest first (captured live at New Delhi Railway Station)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": { "$ref": "#/components/schemas/NearbyStop" }
+                },
+                "example": [
+                  { "stop_id": "7846", "name": "New Delhi Railway Station Gate 2", "lat": 28.643451, "lng": 77.223736, "distance_m": 267, "walk_min": 4.3 },
+                  { "stop_id": "1574", "name": "New Delhi Railway Station Gate 2", "lat": 28.641768, "lng": 77.223592, "distance_m": 269, "walk_min": 4.4 },
+                  { "stop_id": "1624", "name": "New Delhi Railway Station Gate 1", "lat": 28.64168, "lng": 77.218562, "distance_m": 277, "walk_min": 4.5 },
+                  { "stop_id": "1630", "name": "New Delhi Railway Station Gate 1", "lat": 28.6415, "lng": 77.218517, "distance_m": 291, "walk_min": 4.7 },
+                  { "stop_id": "4981", "name": "N.D. Rly. Station Gate No. 2", "lat": 28.644275, "lng": 77.218588, "distance_m": 295, "walk_min": 4.8 },
+                  { "stop_id": "5557", "name": "Ajmeri Gate", "lat": 28.644934, "lng": 77.223576, "distance_m": 339, "walk_min": 5.5 }
+                ]
+              }
+            }
+          },
+          "400": {
+            "description": "Missing/non-finite coordinates or coordinates outside the Delhi region",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Error" },
+                "example": { "error": "coordinates are outside the Delhi region" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/pulse": {
+      "get": {
+        "tags": ["pulse"],
+        "operationId": "getPulse",
+        "summary": "City speed curve by hour (IST)",
+        "description": "Mean observed speed (km/h) per hour of day across the whole network - the City Pulse hour slider's curve. Captured live (full-month retrain model): the 18:00 IST trough runs 12.7 km/h against 25.4 km/h at 03:00 IST.",
+        "responses": {
+          "200": {
+            "description": "24-hour city curve (captured live 17 Nov 2026)",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/Pulse" },
+                "example": {
+                  "city_hour": {
+                    "0": 23.24, "1": 24.24, "2": 25.5, "3": 25.41, "4": 24.79,
+                    "5": 24.53, "6": 23.04, "7": 21.01, "8": 19.19, "9": 17.13,
+                    "10": 16.87, "11": 16.51, "12": 16.06, "13": 16.04, "14": 15.67,
+                    "15": 15.5, "16": 15.17, "17": 14.36, "18": 12.73, "19": 13.16,
+                    "20": 14.97, "21": 17.77, "22": 20.82, "23": 23.35
+                  },
+                  "source": "real-ping-pairs @ edge"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/geo": {
+      "get": {
+        "tags": ["pulse"],
+        "operationId": "getGeo",
+        "summary": "Route shapes colored by observed speed (City Pulse map)",
+        "description": "GeoJSON FeatureCollection of route LineStrings. Coordinates are `[lng, lat]` (GeoJSON order). Routes with a speed observed in this hour come first (`source: \"route-hour\"`); the rest ride their all-day average (`source: \"route-avg\"`) so the client can fade them. `stride` 1-5 thins shape points (`stride=2` is ~3x lighter). Response carries `cache-control: public, max-age=3600`.",
+        "parameters": [
+          {
+            "name": "hour",
+            "in": "query",
+            "required": false,
+            "description": "IST hour 0..23. Default 9; out-of-range values clamp.",
+            "schema": { "type": "integer", "minimum": 0, "maximum": 23, "default": 9 }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "description": "Maximum features. Default 600, clamped 10..1500.",
+            "schema": { "type": "integer", "minimum": 10, "maximum": 1500, "default": 600 }
+          },
+          {
+            "name": "stride",
+            "in": "query",
+            "required": false,
+            "description": "Shape-point thinning factor 1..5.",
+            "schema": { "type": "integer", "minimum": 1, "maximum": 5, "default": 1 }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "FeatureCollection (example truncated to 1 feature; the real response carries up to `limit`)",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/GeoCollection" },
+                "example": {
+                  "type": "FeatureCollection",
+                  "features": [
+                    {
+                      "type": "Feature",
+                      "properties": {
+                        "route": "2716",
+                        "name": "OMS(+)UP",
+                        "speed_kmh": 27.4,
+                        "color": "#67ba83",
+                        "source": "route-hour",
+                        "stride": 1
+                      },
+                      "geometry": {
+                        "type": "LineString",
+                        "coordinates": [[77.31696, 28.64497], [77.31796, 28.64701], [77.31662, 28.64343], [77.31082, 28.63612], [77.29732, 28.64295]]
+                      }
+                    }
+                  ],
+                  "hour": 9,
+                  "stride": 1,
+                  "day": null
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/maps-config": {
+      "get": {
+        "tags": ["ui-config"],
+        "operationId": "getMapsConfig",
+        "summary": "Browser basemap key for the Google Maps JS UI",
+        "description": "Serves a separate, referrer-restricted browser key (Maps JavaScript API only). The real server key never leaves the Worker. `cache-control: private, max-age=300`; a present-but-foreign Origin gets 403.",
+        "responses": {
+          "200": {
+            "description": "Browser key + cloud map id (key placeholder shown - it is public by design but rotates)",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/MapsConfig" },
+                "example": {
+                  "key": "<referrer-restricted browser key>",
+                  "mapId": "<cloud map id>"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Present-but-foreign Origin header",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/MapsConfigDenied" },
+                "example": { "key": null, "note": "forbidden" }
+              }
+            }
+          },
+          "503": {
+            "description": "Browser key not configured on this deployment",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/MapsConfigDenied" },
+                "example": { "key": null, "note": "maps not configured" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/openapi.json": {
+      "get": {
+        "tags": ["system"],
+        "operationId": "getOpenapi",
+        "summary": "This document",
+        "description": "Served from the static-assets layer (workers/public/openapi.json); also reachable at `/api/openapi.json`. `cache-control: public, max-age=3600`.",
+        "responses": {
+          "200": {
+            "description": "OpenAPI 3.1 document (this file)",
+            "content": {
+              "application/json": {
+                "schema": { "type": "object" },
+                "example": {
+                  "openapi": "3.1.0",
+                  "info": {
+                    "title": "Delhi Pulse Edge API",
+                    "version": "1.0.0"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "responses": {
+      "InternalError": {
+        "description": "Unexpected failure (raw exception text goes to Worker logs only; the client gets an opaque reference)",
+        "content": {
+          "application/json": {
+            "schema": { "$ref": "#/components/schemas/InternalError" },
+            "example": { "error": "internal error", "ref": "3f9c2a81b7" }
+          }
+        }
+      }
+    },
+    "schemas": {
+      "Health": {
+        "type": "object",
+        "required": ["ok", "stops", "patterns", "routes"],
+        "properties": {
+          "ok": { "type": "boolean" },
+          "stops": { "type": "integer", "description": "DTC stops in the GTFS index" },
+          "patterns": { "type": "integer", "description": "Route patterns served" },
+          "routes": { "type": "integer", "description": "Routes with a served speed" }
+        }
+      },
+      "Status": {
+        "type": "object",
+        "required": ["ok", "routes", "patterns", "edges", "live", "note"],
+        "properties": {
+          "ok": { "type": "boolean" },
+          "routes": { "type": "integer" },
+          "patterns": { "type": "integer" },
+          "edges": { "type": "integer", "description": "Trained (route, edge, hour) quantile cells shipped in the model asset" },
+          "live": {
+            "type": "object",
+            "required": ["vehicles", "url", "n_fetch"],
+            "properties": {
+              "vehicles": { "type": "integer" },
+              "url": { "type": "boolean" },
+              "n_fetch": { "type": "integer" }
+            }
+          },
+          "note": { "type": "string" }
+        }
+      },
+      "JourneysResponse": {
+        "type": "object",
+        "required": ["options", "note"],
+        "properties": {
+          "options": {
+            "type": "array",
+            "items": { "$ref": "#/components/schemas/JourneyOption" }
+          },
+          "note": {
+            "type": ["string", "null"],
+            "description": "Human-readable explanation when options is empty, or the asOf replay note."
+          }
+        }
+      },
+      "JourneyOption": {
+        "type": "object",
+        "description": "One itinerary. Direct options carry 3 legs (walk -> bus -> walk); one-transfer options carry 5 legs (walk -> bus -> transfer -> bus -> walk) plus the `transfer_*` fields. A walk-only option (crow-fly <= 250 m) has `route_id: null`, `route_name: \"Walk\"`, `confidence: \"walk-only\"` and a single walk leg. Ranked by the C4 internal score; `total_min` is the reported headline.",
+        "required": [
+          "transfers", "total_min", "walk_o", "walk_d", "wait_min", "ride_min",
+          "route_id", "route_code", "route_name",
+          "board", "board_name", "alight", "alight_name",
+          "board_at", "arrive", "legs",
+          "eta_p50_min", "eta_p10_min", "eta_p90_min", "confidence"
+        ],
+        "properties": {
+          "transfers": { "type": "integer", "enum": [0, 1] },
+          "total_min": { "type": "number", "description": "Headline journey time in minutes (walk + wait + ride + transfer). The ranking score adds penalties on top of this but does not change it." },
+          "walk_o": { "type": "number", "description": "Walk to the boarding stop, minutes" },
+          "walk_d": { "type": "number", "description": "Walk from the alighting stop, minutes" },
+          "wait_min": { "type": "number", "description": "Wait(s) for the bus(es), minutes (headway-aware)" },
+          "ride_min": { "type": "number", "description": "In-bus time, minutes (dwell-inclusive)" },
+          "route_id": { "type": ["string", "null"], "description": "Internal route key (e.g. \"1920\"); transfer options join both legs with \"+\"; walk-only is null" },
+          "route_code": { "type": ["string", "null"], "description": "Display code (e.g. \"425UP\"); transfer options join with \"+\" (added 16 Nov 2026, additive)" },
+          "route_name": { "type": ["string", "null"], "description": "Human label; transfer options join with \" + \"; walk-only is \"Walk\"" },
+          "board": { "type": ["string", "null"], "description": "Boarding stop id" },
+          "board_name": { "type": ["string", "null"] },
+          "alight": { "type": ["string", "null"], "description": "Alighting stop id" },
+          "alight_name": { "type": ["string", "null"] },
+          "transfer_stop": { "type": ["string", "null"], "description": "Transfer-only: interchange stop id" },
+          "transfer_name": { "type": ["string", "null"], "description": "Transfer-only: interchange stop name" },
+          "transfer_coord": {
+            "description": "Transfer-only: interchange stop [lat, lng]",
+            "type": ["array", "null"],
+            "prefixItems": [{ "type": "number" }, { "type": "number" }],
+            "items": { "type": "number" },
+            "minItems": 2,
+            "maxItems": 2
+          },
+          "transfer_walk_min": { "type": ["number", "null"], "description": "Transfer-only: walk between the two interchange platforms, minutes (<= 350 m hop)" },
+          "transfer_via": { "type": ["array", "null"], "items": { "type": "string" }, "description": "Transfer-only: intermediate stop ids when the interchange happens via a ride-through rather than a walk" },
+          "board_at": { "type": "string", "format": "date-time", "description": "UTC ISO instant - render in IST" },
+          "arrive": { "type": "string", "format": "date-time", "description": "UTC ISO instant - render in IST" },
+          "legs": {
+            "type": "array",
+            "items": {
+              "oneOf": [
+                { "$ref": "#/components/schemas/WalkLeg" },
+                { "$ref": "#/components/schemas/BusLeg" },
+                { "$ref": "#/components/schemas/TransferLeg" }
+              ]
+            }
+          },
+          "eta_p50_min": { "type": "number", "description": "Median ETA (equals total_min)" },
+          "eta_p10_min": { "type": "number", "description": "Optimistic ETA (10th percentile), includes the final walk" },
+          "eta_p90_min": { "type": "number", "description": "Pessimistic ETA (90th percentile), includes the final walk" },
+          "confidence": { "type": "string", "description": "Opaque display string. Edge values: \"edge-route-hour\" (direct), \"edge-transfer-route-hour\" (one transfer), \"walk-only\". The local FastAPI returns legacy labels (\"v0.5-transfers\", \"v0.6-walk-transfers\") - do not switch on exact values across backends." },
+          "usual_p50_min": { "type": "number", "description": "Additive: the same journey re-timed at the route's quieter service hour (IST). Absent when a leg's route has no qualifying off-peak hour." },
+          "usual_hour_ist": { "type": "integer", "description": "Additive: the quieter hour used, 0..23 IST" },
+          "rush_effect_min": { "type": "number", "description": "Additive: total_min - usual_p50_min; can be NEGATIVE (bus speeds are nearly flat across the day while off-peak headways are sparser). Surface it, don't hide it." }
+        }
+      },
+      "WalkLeg": {
+        "type": "object",
+        "required": ["type", "minutes", "coords"],
+        "properties": {
+          "type": { "type": "string", "const": "walk" },
+          "minutes": { "type": "number" },
+          "coords": {
+            "description": "Straight-line walk polyline: start and end [lat, lng]",
+            "type": "array",
+            "items": {
+              "type": "array",
+              "prefixItems": [{ "type": "number" }, { "type": "number" }],
+              "items": { "type": "number" },
+              "minItems": 2,
+              "maxItems": 2
+            },
+            "minItems": 2,
+            "maxItems": 2
+          }
+        }
+      },
+      "BusLeg": {
+        "type": "object",
+        "required": ["type", "minutes", "route", "stops"],
+        "properties": {
+          "type": { "type": "string", "const": "bus" },
+          "minutes": { "type": "number" },
+          "route": { "type": "string", "description": "Route display code (e.g. \"425UP\")" },
+          "stops": {
+            "description": "One [lat, lng] pair per stop the bus passes, in order",
+            "type": "array",
+            "items": {
+              "type": "array",
+              "prefixItems": [{ "type": "number" }, { "type": "number" }],
+              "items": { "type": "number" },
+              "minItems": 2,
+              "maxItems": 2
+            }
+          },
+          "source": { "type": "string", "enum": ["route-hour", "route-avg", "city"], "description": "Additive (C6): which speed layer priced this leg" },
+          "n": { "type": "integer", "description": "Additive (C6): sample count behind the leg's speed" }
+        }
+      },
+      "TransferLeg": {
+        "type": "object",
+        "required": ["type", "minutes", "at", "walk_min"],
+        "properties": {
+          "type": { "type": "string", "const": "transfer" },
+          "minutes": { "type": "number", "description": "Total interchange time: 2-min buffer + platform walk + next-bus wait" },
+          "at": { "type": "string", "description": "Interchange stop id" },
+          "walk_min": { "type": ["number", "null"], "description": "Platform-change walk, minutes (null when the transfer is at the same stop)" },
+          "coords": {
+            "description": "Present when there is a platform walk: [[from lat,lng], [to lat,lng]]",
+            "type": "array",
+            "items": {
+              "type": "array",
+              "prefixItems": [{ "type": "number" }, { "type": "number" }],
+              "items": { "type": "number" },
+              "minItems": 2,
+              "maxItems": 2
+            },
+            "minItems": 2,
+            "maxItems": 2
+          }
+        }
+      },
+      "StopSearchHit": {
+        "type": "object",
+        "required": ["stop_id", "name", "lat", "lng", "score"],
+        "properties": {
+          "stop_id": { "type": "string", "description": "Per-platform id - several ids can share one station name" },
+          "name": { "type": "string" },
+          "lat": { "type": "number" },
+          "lng": { "type": "number" },
+          "score": { "type": "integer", "description": "A7 fuzzy score (exact name match = 7; substring/all-token-prefix/token-overlap components sum to at most 6)" }
+        }
+      },
+      "NearbyStop": {
+        "type": "object",
+        "required": ["stop_id", "name", "lat", "lng", "distance_m", "walk_min"],
+        "properties": {
+          "stop_id": { "type": "string" },
+          "name": { "type": "string" },
+          "lat": { "type": "number" },
+          "lng": { "type": "number" },
+          "distance_m": { "type": "integer", "description": "Crow-fly distance, metres" },
+          "walk_min": { "type": "number", "description": "Straight-line x1.3 at 80 m/min" }
+        }
+      },
+      "Pulse": {
+        "type": "object",
+        "required": ["city_hour", "source"],
+        "properties": {
+          "city_hour": {
+            "type": "object",
+            "description": "Mean observed speed (km/h) keyed by hour of day \"0\"..\"23\" (IST)",
+            "additionalProperties": { "type": "number" },
+            "propertyNames": { "pattern": "^([01]?[0-9]|2[0-3])$" }
+          },
+          "source": { "type": "string", "const": "real-ping-pairs @ edge" }
+        }
+      },
+      "GeoCollection": {
+        "type": "object",
+        "required": ["type", "features", "hour", "stride", "day"],
+        "properties": {
+          "type": { "type": "string", "const": "FeatureCollection" },
+          "features": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": ["type", "properties", "geometry"],
+              "properties": {
+                "type": { "type": "string", "const": "Feature" },
+                "properties": {
+                  "type": "object",
+                  "required": ["route", "name", "speed_kmh", "color", "source", "stride"],
+                  "properties": {
+                    "route": { "type": "string", "description": "Internal route id" },
+                    "name": { "type": "string", "description": "Route display name/code" },
+                    "speed_kmh": { "type": "number" },
+                    "color": { "type": "string", "description": "Hex color from the shared speedColor() ramp (slow amber-red -> teal)" },
+                    "source": { "type": "string", "enum": ["route-hour", "route-avg"] },
+                    "stride": { "type": "integer" }
+                  }
+                },
+                "geometry": {
+                  "type": "object",
+                  "required": ["type", "coordinates"],
+                  "properties": {
+                    "type": { "type": "string", "const": "LineString" },
+                    "coordinates": {
+                      "description": "[lng, lat] pairs (GeoJSON order)",
+                      "type": "array",
+                      "items": {
+                        "type": "array",
+                        "prefixItems": [{ "type": "number" }, { "type": "number" }],
+                        "items": { "type": "number" },
+                        "minItems": 2,
+                        "maxItems": 2
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "hour": { "type": "integer" },
+          "stride": { "type": "integer" },
+          "day": { "type": ["null", "string"], "description": "Always null on the edge (pooled full-month model)" }
+        }
+      },
+      "MapsConfig": {
+        "type": "object",
+        "required": ["key", "mapId"],
+        "properties": {
+          "key": { "type": "string", "description": "Browser key restricted to the Maps JavaScript API and this site's HTTP referrer" },
+          "mapId": { "type": "string", "description": "Cloud-based map id for map styling (\"DEMO_MAP_ID\" when unset)" }
+        }
+      },
+      "MapsConfigDenied": {
+        "type": "object",
+        "required": ["key"],
+        "properties": {
+          "key": { "type": "null" },
+          "note": { "type": "string", "enum": ["forbidden", "maps not configured"] }
+        }
+      },
+      "Error": {
+        "type": "object",
+        "properties": {
+          "error": { "type": "string" },
+          "hint": { "type": "string" }
+        }
+      },
+      "InternalError": {
+        "type": "object",
+        "required": ["error", "ref"],
+        "properties": {
+          "error": { "type": "string", "const": "internal error" },
+          "ref": { "type": "string", "description": "Random reference to correlate with Worker logs" }
+        }
+      }
+    }
+  }
+}

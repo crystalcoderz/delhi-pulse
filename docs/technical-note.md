@@ -254,6 +254,8 @@ Google fall back to live traffic.
 - **Full planner (tunneled):** FastAPI on the machine, Cloudflare Tunnel
   for public URL — full journey planner with transfers, replay, live layer
   (a switch, not a blend — §6)
+- The deployed API spec is at `/openapi.json` (OpenAPI 3.1; reachable at
+  https://delhi-pulse.prayaas.workers.dev/openapi.json).
 - **Reproducibility:** `pip install -r requirements.txt` + full pipeline runs
   from scratch; synthetic fixture for end-to-end testing without downloads
 - **Open source:** `github.com/crystalcoderz/delhi-pulse`
