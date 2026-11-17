@@ -1300,7 +1300,8 @@ export default {
                                "/api/places/resolve?place_id=",
                                "/api/gmaps-drive?from=&to=&depart=",
                                "/api/pulse", "/api/geo?hour=&limit=&stride=",
-                               "/api/lookup?route=&hour="],
+                               "/api/lookup?route=&hour=", "/api/status"],
+                   playground: "/playground",
                    docs: "github.com/crystalcoderz/delhi-pulse" });
       }
 

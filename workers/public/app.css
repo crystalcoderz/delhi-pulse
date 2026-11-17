@@ -149,6 +149,10 @@ select {
   font-size: 20px;
   letter-spacing: 0.08em;
 }
+.plate-sm {
+  padding: 2px 6px 1px;
+  font-size: 15px;
+}
 
 .views {
   display: flex;
@@ -204,15 +208,36 @@ select {
   position: absolute;
   inset: 0;
 }
-.map-fallback {
+/* Canvas schematic used when the street map cannot load, and in API previews. */
+.map-wrap.is-sketch {
+  background: var(--surface);
+}
+.sketch {
   position: absolute;
   inset: 0;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  padding: 24px;
-  text-align: center;
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+.sketch-note {
+  position: absolute;
+  left: 12px;
+  bottom: 12px;
+  max-width: min(360px, calc(100% - 24px));
+  padding: 6px 10px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  font-size: 14px;
+  line-height: 1.4;
   color: var(--muted);
+}
+
+/* Positioned, so visually hidden (absolute) labels scroll with the panel instead of
+   stretching the document and letting scrollIntoView slide the header off screen. */
+.panel,
+.pg {
+  position: relative;
 }
 
 .panel {
@@ -231,6 +256,20 @@ select {
 @media (max-width: 899px) {
   .shell:has(.combo input:focus) .map-wrap {
     display: none;
+  }
+}
+
+@media (max-width: 419px) {
+  .bar {
+    gap: 6px;
+    padding: 0 10px;
+  }
+  .plate-brand {
+    padding: 4px 8px 3px;
+    font-size: 18px;
+  }
+  .views a {
+    padding: 0 7px;
   }
 }
 
@@ -585,9 +624,33 @@ input[type="range"] {
   background: var(--green);
 }
 
-.card-sum {
+.keys {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px 14px;
   font-size: 14px;
   color: var(--muted);
+}
+.key {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  white-space: nowrap;
+}
+.key::before {
+  content: "";
+  flex: none;
+  width: 10px;
+  height: 10px;
+  border-radius: 2px;
+  background: var(--line-strong);
+}
+.key-wait::before,
+.key-change::before {
+  background: var(--amber);
+}
+.key-bus::before {
+  background: var(--green);
 }
 .card-route {
   font-size: 15px;
@@ -612,6 +675,21 @@ input[type="range"] {
   border-top: 1px solid var(--line);
   font-size: 15px;
   line-height: 1.4;
+}
+
+.evidence {
+  display: block;
+  font-size: 14px;
+  color: var(--muted);
+}
+
+.api-link {
+  align-self: flex-start;
+  padding: 4px 0;
+  color: var(--green);
+  font-size: 15px;
+  font-weight: 600;
+  text-underline-offset: 2px;
 }
 
 .error-card {
@@ -790,13 +868,20 @@ input[type="range"] {
   background: var(--line-strong);
   border: 0;
   border-radius: 2px 2px 0 0;
+  opacity: 0.55;
   cursor: pointer;
 }
 .hour-bar:hover {
-  background: var(--ink);
+  opacity: 0.8;
 }
 .hour-bar[aria-pressed="true"] {
-  background: var(--green);
+  opacity: 1;
+  outline: 2px solid var(--ink);
+  outline-offset: 1px;
+}
+.hour-bar.is-static {
+  opacity: 1;
+  cursor: default;
 }
 .hour-ticks {
   display: flex;
@@ -828,4 +913,321 @@ input[type="range"] {
   gap: 8px;
   font-size: 14px;
   color: var(--muted);
+}
+
+/* ---------- API playground ---------- */
+/* One scrolling column on phones; endpoint panel beside the response from 900px. */
+.pg {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow-y: auto;
+}
+.pg > .panel {
+  flex: none;
+  overflow: visible;
+  border-top: 0;
+}
+.pg-out {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-width: 0;
+  padding: 0 16px 24px;
+}
+
+@media (min-width: 900px) {
+  .pg {
+    flex-direction: row;
+    overflow: hidden;
+  }
+  .pg > .panel {
+    flex: 0 0 420px;
+    overflow-y: auto;
+  }
+  .pg-out {
+    flex: 1 1 0;
+    overflow-y: auto;
+    padding: 20px;
+  }
+}
+
+.base-url {
+  font-size: 15px;
+  overflow-wrap: anywhere;
+}
+
+.ep {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+}
+.ep-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 48px;
+  padding: 6px 12px;
+}
+.ep-path {
+  min-width: 0;
+  font: 600 17px/1.3 var(--font-sans);
+  overflow-wrap: anywhere;
+}
+.ep-tag {
+  flex: none;
+  margin-left: auto;
+  font-size: 14px;
+  color: var(--muted);
+}
+
+.ep-form {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 12px;
+  border-top: 1px solid var(--line);
+}
+/* Parameter names are case-sensitive, so they are not set in the uppercase label style. */
+.ep-form label {
+  font: 600 16px/1.3 var(--font-sans);
+  letter-spacing: 0;
+  text-transform: none;
+  color: var(--ink);
+}
+.req {
+  font-size: 14px;
+  color: var(--muted);
+}
+.ep-notes {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 0;
+  padding-left: 18px;
+  font-size: 14px;
+  color: var(--muted);
+}
+
+.chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.chip {
+  display: inline-flex;
+  align-items: center;
+  min-height: 40px;
+  padding: 4px 14px;
+  background: var(--surface);
+  border: 1px solid var(--line-strong);
+  border-radius: 20px;
+  color: var(--ink);
+  font-size: 15px;
+  line-height: 1.2;
+  text-decoration: none;
+  cursor: pointer;
+}
+.chip:hover {
+  border-color: var(--ink);
+  background: var(--green-soft);
+}
+/* The chosen endpoint wears the same plate as a bus route number. */
+.chip[aria-pressed="true"] {
+  background: var(--ink);
+  border-color: var(--ink);
+  color: var(--amber);
+  font-weight: 600;
+}
+
+.request {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 14px 16px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+}
+.req-line {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+}
+.req-url {
+  min-width: 0;
+  font-weight: 600;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+
+.res-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 16px;
+  min-height: 28px;
+  font-size: 15px;
+  color: var(--muted);
+}
+.status-ok {
+  background: var(--green);
+  color: var(--surface);
+}
+.status-err {
+  background: var(--red);
+  color: var(--surface);
+}
+
+.tabs-row {
+  display: flex;
+  align-items: stretch;
+  justify-content: space-between;
+  gap: 12px;
+  border-bottom: 1px solid var(--line);
+}
+.tabs {
+  display: flex;
+}
+.tab {
+  min-height: 44px;
+  padding: 0 12px;
+  background: none;
+  border: 0;
+  border-bottom: 3px solid transparent;
+  color: var(--muted);
+  font-weight: 600;
+  cursor: pointer;
+}
+.tab:hover {
+  color: var(--ink);
+}
+.tab[aria-selected="true"] {
+  color: var(--ink);
+  border-bottom-color: var(--green);
+}
+
+.pane {
+  min-width: 0;
+  padding: 16px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+}
+
+/* JSON tree: nesting is structural, so it reads without a monospace font. */
+.j-tree {
+  font-size: 15px;
+  line-height: 1.6;
+  font-variant-numeric: tabular-nums;
+  overflow-wrap: anywhere;
+}
+.j-kids {
+  margin-left: 5px;
+  padding-left: 16px;
+  border-left: 1px solid var(--line);
+}
+.j-row {
+  padding-left: 17px;
+}
+.j-node > summary {
+  cursor: pointer;
+}
+.j-node[open] > summary .j-prev,
+.j-node[open] > summary .j-close {
+  display: none;
+}
+.j-key {
+  font-weight: 600;
+}
+.j-idx,
+.j-prev,
+.j-null {
+  color: var(--muted);
+}
+.j-str {
+  color: var(--green);
+}
+.j-num {
+  color: var(--red);
+}
+.j-more {
+  margin-left: 17px;
+}
+
+/* Endpoint-specific previews */
+.pv {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+.pv-note {
+  color: var(--muted);
+}
+.sketch-box {
+  position: relative;
+  height: 340px;
+  background: var(--paper);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  overflow: hidden;
+}
+.sketch-box.is-short {
+  height: 220px;
+}
+
+.opts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.opt {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+  padding: 8px 12px;
+  background: var(--surface);
+  border: 2px solid var(--line);
+  border-radius: var(--radius);
+  text-align: left;
+  cursor: pointer;
+}
+.opt:hover {
+  border-color: var(--line-strong);
+}
+.opt[aria-pressed="true"] {
+  border-color: var(--ink);
+}
+.opt-min {
+  font: 700 26px/1 var(--font-display);
+  font-variant-numeric: tabular-nums;
+}
+
+.table-scroll {
+  overflow-x: auto;
+}
+.pv-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 15px;
+  font-variant-numeric: tabular-nums;
+}
+.pv-table th,
+.pv-table td {
+  padding: 6px 16px 6px 0;
+  border-bottom: 1px solid var(--line);
+  text-align: left;
+  vertical-align: top;
+}
+.pv-table th {
+  font: 700 14px/1.3 var(--font-display);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted);
+  white-space: nowrap;
+}
+.pv .hours {
+  height: 120px;
 }

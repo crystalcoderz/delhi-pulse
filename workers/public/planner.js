@@ -1,7 +1,7 @@
 (() => {
   'use strict';
 
-  const { API, COLORS, h, getJSON, createMap, REDUCED_MOTION } = window.DelhiPulse;
+  const { API, COLORS, h, getJSON, createMap, sketchMap, REDUCED_MOTION } = window.DelhiPulse;
   const $ = id => document.getElementById(id);
   const enc = encodeURIComponent;
 
@@ -20,12 +20,16 @@
   const replayDays = new Set();
   let planSeq = 0;
   let shownJourney = null;
+  let lastQuery = '';
 
   let map = null;
+  // Stands in for the street map when Google Maps cannot start (no key, blocked referrer, offline).
+  let sketch = null;
+  let network = [];
   // Resolves only once a working map exists, so map work queued on it never runs against null.
   const mapReady = new Promise(resolve => {
     createMap('map', { center: [77.21, 28.62], zoom: 10.5 }).then(ready => {
-      if (!ready) return;
+      if (!ready) return startSketch();
       map = ready;
       window.map = map;
       resolve(map);
@@ -154,35 +158,83 @@
     map.fitBounds(bounds, padding);
   }
 
+  // Walk paths, bus paths and classified stops of a journey, as [lng, lat] points.
+  function journeyShapes(journey) {
+    const walk = [], bus = [], stops = [], extent = [];
+    const legs = journey && Array.isArray(journey.legs) ? journey.legs : [];
+    const busLegs = legs.filter(leg => leg.type === 'bus');
+
+    for (const leg of legs) {
+      if (leg.type === 'transfer') continue;
+      // The API sends [lat, lng]; GeoJSON wants [lng, lat].
+      const pts = (leg.stops || leg.coords || [])
+        .filter(c => Array.isArray(c) && c.length >= 2)
+        .map(c => [c[1], c[0]]);
+      if (pts.length < 2) continue;
+      extent.push(...pts);
+      if (leg.type !== 'bus') {
+        walk.push(pts);
+        continue;
+      }
+      bus.push(pts);
+      const n = busLegs.indexOf(leg);
+      pts.forEach((pt, i) => {
+        let kind = 'stop';
+        if (i === 0) kind = n === 0 ? 'board' : 'transfer';
+        else if (i === pts.length - 1) kind = n === busLegs.length - 1 ? 'alight' : 'transfer';
+        stops.push([pt, kind]);
+      });
+    }
+    return { walk, bus, stops, extent };
+  }
+
+  function startSketch() {
+    const box = $('map');
+    box.parentElement.classList.add('is-sketch');
+    sketch = sketchMap(box, {
+      label: 'Schematic of the Delhi bus network showing your start, destination and the selected journey',
+      caption: 'Street map unavailable here. Journeys are drawn over the bus network.',
+    });
+    drawSketch();
+    getJSON('/geo?hour=9&stride=4&limit=400', null).then(fc => {
+      if (!fc || !Array.isArray(fc.features)) return;
+      network = fc.features
+        .map(feature => feature.geometry && feature.geometry.coordinates)
+        .filter(Array.isArray);
+      drawSketch();
+    });
+  }
+
+  function drawSketch() {
+    const { walk, bus, stops, extent } = journeyShapes(shownJourney);
+    const layers = network.map(path => ({ path, color: COLORS.line, width: 1, context: true }));
+    for (const path of walk) layers.push({ path, color: COLORS.ink, width: 2.5, dash: [0.5, 7] });
+    for (const path of bus) layers.push({ path, color: COLORS.green, width: 5, casing: COLORS.white });
+    for (const [at, kind] of stops) {
+      layers.push(kind === 'stop'
+        ? { at, r: 2.5, fill: COLORS.white, stroke: COLORS.green, strokeWidth: 1.5 }
+        : { at, r: 6, fill: kind === 'transfer' ? COLORS.amber : COLORS.white, stroke: COLORS.ink, strokeWidth: 2.5 });
+    }
+    const focus = [...extent];
+    for (const end of ENDS) {
+      if (!picks[end]) continue;
+      focus.push(picks[end].coord);
+      layers.push({
+        at: picks[end].coord, r: 13, stroke: COLORS.white, strokeWidth: 2,
+        fill: end === 'from' ? COLORS.green : COLORS.ink,
+        text: end === 'from' ? 'A' : 'B',
+        textColor: end === 'from' ? COLORS.white : COLORS.amber,
+      });
+    }
+    sketch.set(layers, focus);
+  }
+
   function draw(journey) {
     shownJourney = journey;
+    if (sketch) return drawSketch();
     mapReady.then(() => {
       if (shownJourney !== journey) return;
-      const walk = [], bus = [], stops = [], extent = [];
-      const legs = journey && Array.isArray(journey.legs) ? journey.legs : [];
-      const busLegs = legs.filter(leg => leg.type === 'bus');
-
-      for (const leg of legs) {
-        if (leg.type === 'transfer') continue;
-        // The API sends [lat, lng]; GeoJSON wants [lng, lat].
-        const pts = (leg.stops || leg.coords || [])
-          .filter(c => Array.isArray(c) && c.length >= 2)
-          .map(c => [c[1], c[0]]);
-        if (pts.length < 2) continue;
-        extent.push(...pts);
-        if (leg.type !== 'bus') {
-          walk.push(pts);
-          continue;
-        }
-        bus.push(pts);
-        const n = busLegs.indexOf(leg);
-        pts.forEach((pt, i) => {
-          let kind = 'stop';
-          if (i === 0) kind = n === 0 ? 'board' : 'transfer';
-          else if (i === pts.length - 1) kind = n === busLegs.length - 1 ? 'alight' : 'transfer';
-          stops.push([pt, kind]);
-        });
-      }
+      const { walk, bus, stops, extent } = journeyShapes(journey);
 
       clearOverlays();
       const dot = {
@@ -208,6 +260,7 @@
   const isEmpty = end => !picks[end] && !$(end).value.trim();
 
   function placeMarker(end) {
+    if (sketch) return drawSketch();
     mapReady.then(() => {
       const pick = picks[end];
       if (!pick) {
@@ -501,14 +554,14 @@
 
     const depart = departISO();
     const asOf = $('asof').value ? $('asof').value + 'T08:00:00+05:30' : '';
-    const url = `${API}/journeys?from=${enc(fromVal)}&to=${enc(toVal)}`
+    const query = `from=${enc(fromVal)}&to=${enc(toVal)}`
       + (depart ? `&depart=${enc(depart)}` : '')
       + (asOf ? `&asOf=${enc(asOf)}` : '')
       + '&max=4';
 
     let result;
     try {
-      const response = await fetch(url);
+      const response = await fetch(`${API}/journeys?${query}`);
       result = await response.json().catch(() => ({}));
       if (!response.ok && !Array.isArray(result.options)) {
         result = {
@@ -525,6 +578,7 @@
     // A newer search has started; it owns the button and the results now.
     if (seq !== planSeq) return;
     setBusy(false);
+    lastQuery = query;
     try {
       render(result);
     } catch (err) {
@@ -548,10 +602,30 @@
       else if (leg.type === 'bus') {
         if (!boarded && firstWait > 0) out.push({ kind: 'wait', min: firstWait });
         boarded = true;
-        out.push({ kind: 'bus', min, route: leg.route, stops: Math.max(0, (leg.stops || []).length - 1) });
+        out.push({
+          kind: 'bus', min, route: leg.route, stops: Math.max(0, (leg.stops || []).length - 1),
+          source: leg.source, n: leg.n,
+        });
       }
     }
     return out;
+  }
+
+  // What the ride-time estimate for a bus leg was based on, from the leg's source and n.
+  function evidence(seg) {
+    const n = Number(seg.n);
+    const count = Number.isFinite(n) && n > 0 ? n.toLocaleString('en-IN') : '';
+    if (seg.source === 'route-hour') {
+      return count
+        ? `Speed from ${count} recordings of this route at this hour.`
+        : 'Speed recorded on this route at this hour.';
+    }
+    if (seg.source === 'route-avg') {
+      return 'No recordings at this hour, so this uses the route\u2019s all-day average'
+        + (count ? ` (${count} recordings).` : '.');
+    }
+    if (seg.source === 'city') return 'No recordings for this route, so this uses the citywide average for this hour.';
+    return '';
   }
 
   function stepItems(journey, segs) {
@@ -574,8 +648,10 @@
         const isLast = busSegs.indexOf(seg) === busSegs.length - 1;
         const dest = isLast ? journey.alight_name : journey.transfer_name;
         const stopCount = seg.stops ? ', ' + seg.stops + (seg.stops === 1 ? ' stop' : ' stops') : '';
+        const basis = evidence(seg);
         items.push(['Ride ', bold(seg.route || journey.route_name || 'the bus'), ' for ' + m + ' min' + stopCount,
-          dest ? ' to ' : '', dest ? bold(dest) : '']);
+          dest ? ' to ' : '', dest ? bold(dest) : '',
+          basis && h('span', { class: 'evidence', text: basis })]);
       }
     }
     return items;
@@ -607,7 +683,8 @@
     }
 
     const labels = { walk: 'Walk', wait: 'Wait', bus: 'Ride', change: 'Change' };
-    const summary = segs.filter(s => s.min > 0).map(s => labels[s.kind] + ' ' + minutes(s.min)).join(' \u00b7 ');
+    const keys = segs.filter(s => s.min > 0).map(s =>
+      h('span', { class: 'key key-' + s.kind, text: `${labels[s.kind]} ${minutes(s.min)} min` }));
 
     let rush = null;
     const effect = Number(journey.rush_effect_min);
@@ -638,7 +715,7 @@
         arrive && h('p', { class: 'arrive' }, 'Arrive', bold(arrive))),
       routes.length > 0 && plates,
       legbar.childElementCount > 0 && legbar,
-      summary && h('p', { class: 'card-sum', text: summary + ' min' }),
+      keys.length > 0 && h('p', { class: 'keys' }, keys),
       rush,
       route,
       steps.length > 0 && h('ol', { class: 'steps', hidden: true }, steps.map(parts => h('li', {}, parts))));
@@ -673,6 +750,11 @@
     return day ? `Replaying the bus speeds recorded on ${dayLabel(day)}.` : '';
   }
 
+  const apiLink = () => lastQuery && h('a', {
+    class: 'api-link', href: 'playground.html#journeys?' + lastQuery,
+    text: 'See this request in the API playground',
+  });
+
   function render(result) {
     const box = $('results');
     box.replaceChildren();
@@ -682,7 +764,7 @@
       const message = sentence(result.note || (result.failed
         ? 'The planner ran into a problem. Please try again'
         : 'No bus route found. Try a start or destination closer to a bus corridor'));
-      box.append(h('div', { class: 'card error-card' }, h('p', { class: 'meta', text: message })));
+      box.append(h('div', { class: 'card error-card' }, h('p', { class: 'meta', text: message })), apiLink());
       announce(message);
       return;
     }
@@ -691,7 +773,7 @@
     if (note) box.append(h('p', { class: 'mode-note', text: note }));
     box.append(h('h2', { class: 'label', text: options.length === 1 ? '1 journey' : options.length + ' journeys, fastest first' }));
     const cards = options.map(journeyCard);
-    box.append(...cards);
+    box.append(...cards, apiLink());
     selectCard(cards[0], options[0]);
     announce(`${options.length === 1 ? '1 journey' : options.length + ' journeys'} found. `
       + `The fastest takes about ${Math.round(options[0].eta_p50_min || options[0].total_min || 0)} minutes.`);
