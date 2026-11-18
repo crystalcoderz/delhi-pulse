@@ -10,4 +10,4 @@ binding = "LIVE_KV"
 id = "0414c8a7591b4decaddeb950ae056ea0"
 
 [triggers]
-crons = ["*/3 * * * *"]
+crons = ["*/15 * * * *"]
