@@ -43,7 +43,7 @@ validation/    Holdout harnesses + OD comparison table
 | Test | Metric |
 |---|---|
 | Speed layer (ping-pairs; 801,551 cell-day evals, 31 leave-one-day-out folds) | **MAE 1.96 km/h** vs city baseline 3.07 (36.1% lift) |
-| Journey holdout (5-40 hop rides, train Oct 1-24, score Oct 25-31) | rerun in progress with `validation/holdout_journeys.py`; results will be written to `model/holdout_journeys.json` |
+| Journey holdout (5-40 hop rides, train Oct 1-24, score Oct 25-31) | **MAE 4.6 min** on mean ride 30.9 min (14.9% of ride time), n=4,178, 90.5% within 10 min, band coverage 84.5% |
 | Planner dead hours | returns `options: []` with a note (no observed service = no bus; verified 02:00-04:00) |
 | Shape match rate | 92% of real trajectory segments |
 | Definitional note | `trip_id` values are runtime `route_HH_MM` labels; "observed trips" counts label-days, not physical buses |

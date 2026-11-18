@@ -136,23 +136,46 @@ leave-one-day-out harness that produces the numbers above.
 
 ### 7.2 Journey holdout (real multi-hop rides, strict time split)
 
-> **Pending (2026-11-16):** the journey-level holdout has been rebuilt
-> (backlog F1/F2) to chain one vehicle trip's traversals into real
-> **5-40-hop rides** and score the whole ride, with a strict time split —
-> model trained on **Oct 1-24**, scored on **Oct 25-31**, predictions from
-> train-window statistics only. The rerun against the full-month model is
-> still in flight; final numbers will be quoted from
-> `model/holdout_journeys.json` when it lands, reported beside the mean
-> ride time so the MAE has scale.
->
-> The previously published replay table (day-13 "365 samples", days 28-30
-> "72 samples", 1.22-1.66 min MAE, 98-100% within 10 min) is **withdrawn**:
-> it scored single stop-to-next-stop hops on days that sat in the training
-> list, so those figures were neither journey-level nor held out. Coverage
-> caveat to carry into the replacement numbers: the old harness sampled 72
-> replays and could score only **36** ("n=36 scored") — small-sample, so
-> the new headline claims will state an explicit n and the fallback-leg
-> share.
+The journey-level holdout chains one vehicle trip's traversals into real
+**5-40-hop rides** and scores the whole ride, with a strict time split:
+model statistics from **Oct 1-24 only**, scored on **Oct 25-31**.
+
+| Metric | Value |
+|---|---|
+| Journeys scored | **n = 4,178** |
+| Mean ride time | **30.9 min** |
+| Mean predicted | 31.8 min |
+| **Journey MAE** | **4.6 min** (14.9% of mean ride) |
+| Bias (pred − actual) | +0.81 min |
+| Within 5 min | 69.0% |
+| Within 10 min | **90.5%** |
+| Edge-cell coverage | 97.6% of legs on trained cells (2.4% on fallback) |
+| Band coverage (p10-p90 contains actual) | **84.5%** |
+| Mean legs per journey | 18.1 |
+
+**By hour of departure (IST):**
+
+| Hour band | n | MAE (min) | Mean ride (min) |
+|---|---|---|---|
+| 0–5 | 234 | 5.12 | 22.3 |
+| 6–10 | 1,384 | 4.11 | 32.5 |
+| 11–16 | 1,348 | 4.63 | 30.6 |
+| 17–20 | 820 | 5.63 | 34.5 |
+| 21–23 | 392 | 3.79 | 24.3 |
+
+**By ride length (hops):**
+
+| Hops | n | MAE (min) | Mean ride (min) |
+|---|---|---|---|
+| 5–9 | 1,018 | 3.55 | 11.9 |
+| 10–20 | 1,602 | 4.14 | 25.8 |
+| 21–40 | 1,558 | 5.76 | 48.7 |
+
+The previously published replay table (day-13 "365 samples", days 28-30
+"72 samples", 1.22-1.66 min MAE) is **withdrawn**: it scored single
+stop-to-next-stop hops on days that sat in the training list, so those
+figures were neither journey-level nor held out. The old harness could
+score only 36 of 72 replays; the new holdout scores 4,178 complete rides.
 
 ### 7.3 Google Maps comparison (20 Delhi landmark pairs)
 
