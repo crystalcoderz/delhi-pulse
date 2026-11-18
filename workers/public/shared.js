@@ -37,7 +37,8 @@ window.DelhiPulse = (() => {
   }
 
   // The edge serves the config at /api/maps-config; the local API at /maps-config.
-  async function mapsConfig() {
+  let configReady = null;
+  async function fetchMapsConfig() {
     for (const path of ['/api/maps-config', '/maps-config']) {
       try {
         const response = await fetch(API + path);
@@ -51,7 +52,17 @@ window.DelhiPulse = (() => {
     throw new Error('maps config unavailable');
   }
 
+  // Cached so every map on a page shares one request; a failure is not cached.
+  function mapsConfig() {
+    if (!configReady) {
+      configReady = fetchMapsConfig();
+      configReady.catch(() => { configReady = null; });
+    }
+    return configReady;
+  }
+
   let googleReady = null;
+  const authListeners = new Set();
   function loadGoogleMaps(key) {
     if (googleReady) return googleReady;
     googleReady = new Promise((resolve, reject) => {
@@ -60,8 +71,12 @@ window.DelhiPulse = (() => {
         delete window[callback];
         resolve(window.google.maps);
       };
-      // Google calls this on key or billing errors after the script has loaded.
-      window.gm_authFailure = () => reject(new Error('google maps auth failed'));
+      // Google calls this on key or billing errors after the script has loaded, and it can
+      // arrive after a map has already rendered, so every live map hears about it.
+      window.gm_authFailure = () => {
+        reject(new Error('google maps auth failed'));
+        for (const listener of authListeners) listener();
+      };
       const params = new URLSearchParams({
         key, v: 'weekly', libraries: 'marker', loading: 'async',
         callback, region: 'IN', language: 'en',
@@ -189,8 +204,14 @@ window.DelhiPulse = (() => {
   }
 
   // Resolves to a google.maps.Map once it has rendered, or null when the map cannot start.
-  async function createMap(containerId, view) {
-    const container = document.getElementById(containerId);
+  function createMap(containerId, view) {
+    return createMapIn(document.getElementById(containerId), view);
+  }
+
+  // onLost runs if Google rejects the key after the map has already been returned.
+  async function createMapIn(container, view, onLost) {
+    let finished = false;
+    let lost;
     try {
       const config = await mapsConfig();
       const maps = await loadGoogleMaps(config.key);
@@ -207,16 +228,126 @@ window.DelhiPulse = (() => {
         restriction: { latLngBounds: DELHI_BOUNDS, strictBounds: false },
       });
       await new Promise((resolve, reject) => {
-        window.gm_authFailure = () => {
+        lost = () => {
+          authListeners.delete(lost);
           mapFailed(container);
-          reject(new Error('google maps auth failed'));
+          if (finished) {
+            if (onLost) onLost();
+          } else {
+            reject(new Error('google maps auth failed'));
+          }
         };
+        authListeners.add(lost);
         maps.event.addListenerOnce(map, 'tilesloaded', resolve);
       });
+      finished = true;
       return map;
     } catch (err) {
+      if (lost) authListeners.delete(lost);
       return mapFailed(container);
     }
+  }
+
+  // Draws the same layers as sketchMap, but over the Google street map. When Google cannot
+  // start (no key, blocked referrer, offline, hidden box that never loads) it becomes a sketchMap.
+  function layerMap(container, options = {}) {
+    const START_TIMEOUT_MS = 10000;
+    const MAX_ZOOM = 16;
+    let layers = [], focus = null;
+    let map = null, sketch = null, overlays = [];
+
+    function useSketch() {
+      if (sketch || map) return;
+      container.replaceChildren();
+      sketch = sketchMap(container, options);
+      sketch.set(layers, focus);
+    }
+
+    function draw() {
+      const maps = window.google.maps;
+      for (const overlay of overlays) overlay.setMap(null);
+      overlays = [];
+      const toLatLng = ([lng, lat]) => ({ lat, lng });
+      const symbol = (r, fill, stroke, strokeWeight) => ({
+        path: maps.SymbolPath.CIRCLE, scale: r, fillColor: fill, fillOpacity: 1,
+        strokeColor: stroke || fill, strokeOpacity: 1, strokeWeight: strokeWeight || 0,
+      });
+      const own = layers.filter(layer => !layer.context);
+
+      for (const layer of layers) {
+        const opacity = layer.opacity == null ? 1 : layer.opacity;
+        if (layer.path) {
+          const path = layer.path.map(toLatLng);
+          if (layer.casing) {
+            overlays.push(new maps.Polyline({
+              map, path, clickable: false, zIndex: 1,
+              strokeColor: layer.casing, strokeWeight: layer.width + 4, strokeOpacity: opacity,
+            }));
+          }
+          overlays.push(new maps.Polyline(layer.dash
+            ? {
+              map, path, clickable: false, zIndex: 2, strokeOpacity: 0,
+              icons: [{ icon: { ...symbol(Math.max(1.5, layer.width / 2), layer.color), fillOpacity: opacity }, offset: '0', repeat: '9px' }],
+            }
+            : {
+              map, path, clickable: false, zIndex: 2,
+              strokeColor: layer.color, strokeWeight: layer.width, strokeOpacity: opacity,
+            }));
+        } else if (layer.at) {
+          overlays.push(new maps.Marker({
+            map, position: toLatLng(layer.at), clickable: false, zIndex: 3,
+            icon: symbol(layer.r, layer.fill, layer.stroke, layer.stroke ? layer.strokeWidth || 2 : 0),
+            label: layer.text
+              ? { text: layer.text, color: layer.textColor || COLORS.white, fontWeight: '700', fontSize: '13px' }
+              : undefined,
+          }));
+        }
+      }
+
+      const points = focus && focus.length
+        ? focus
+        : (own.length ? own : layers).flatMap(layer => layer.path || [layer.at]);
+      if (!points.length) return;
+      const bounds = new maps.LatLngBounds();
+      for (const point of points) bounds.extend(toLatLng(point));
+      const padding = Math.max(24, Math.min(64, Math.round(Math.min(container.clientWidth, container.clientHeight) / 6)));
+      maps.event.addListenerOnce(map, 'idle', () => {
+        if (map.getZoom() > MAX_ZOOM) map.setZoom(MAX_ZOOM);
+      });
+      map.fitBounds(bounds, padding);
+    }
+
+    const timer = setTimeout(useSketch, START_TIMEOUT_MS);
+    const lostLater = () => {
+      map = null;
+      useSketch();
+    };
+    createMapIn(container, { center: [77.21, 28.62], zoom: 10 }, lostLater).then(ready => {
+      clearTimeout(timer);
+      if (sketch) return;
+      if (!ready) return useSketch();
+      map = ready;
+      drawOrSketch();
+    });
+
+    // A drawing error must not leave a blank box, so it degrades to the schematic.
+    function drawOrSketch() {
+      try {
+        draw();
+      } catch (err) {
+        map = null;
+        useSketch();
+      }
+    }
+
+    return {
+      set(nextLayers, nextFocus) {
+        layers = nextLayers || [];
+        focus = nextFocus || null;
+        if (sketch) sketch.set(layers, focus);
+        else if (map) drawOrSketch();
+      },
+    };
   }
 
   // Linear interpolation through [stop, value] pairs, clamped at both ends.
@@ -250,5 +381,5 @@ window.DelhiPulse = (() => {
     return stops[stops.length - 1][1];
   }
 
-  return { API, COLORS, REDUCED_MOTION, h, getJSON, createMap, sketchMap, ramp, colorRamp };
+  return { API, COLORS, REDUCED_MOTION, h, getJSON, createMap, sketchMap, layerMap, ramp, colorRamp };
 })();

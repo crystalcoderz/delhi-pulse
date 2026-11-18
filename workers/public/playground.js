@@ -1,7 +1,7 @@
 (() => {
   'use strict';
 
-  const { API, COLORS, h, sketchMap, colorRamp } = window.DelhiPulse;
+  const { API, COLORS, h, layerMap, colorRamp } = window.DelhiPulse;
   const $ = id => document.getElementById(id);
 
   const SPEED_COLORS = [[8, COLORS.red], [20, COLORS.amberDeep], [32, COLORS.green]];
@@ -271,7 +271,7 @@
     if (!options.length) return note(data.note ? `No options. note: ${data.note}` : 'No options were returned.');
 
     const box = h('div', { class: 'sketch-box' });
-    const sketch = sketchMap(box, { label: 'Schematic of the selected journey option' });
+    const sketch = layerMap(box, { label: 'Map of the selected journey option' });
     const legs = h('div', {});
 
     const draw = option => {
@@ -336,7 +336,7 @@
       .filter(f => f && f.geometry && Array.isArray(f.geometry.coordinates));
     if (!features.length) return note('No features were returned.');
     const box = h('div', { class: 'sketch-box' });
-    sketchMap(box, { label: 'Schematic of the returned routes colored by speed' }).set(features.map(feature => {
+    layerMap(box, { label: 'Map of the returned routes colored by speed' }).set(features.map(feature => {
       const props = feature.properties || {};
       const speed = Number(props.speed_kmh);
       return {
@@ -398,7 +398,7 @@
       layers.push({ at: [lng, lat], r: 7, fill: COLORS.ink, stroke: COLORS.white, strokeWidth: 2 });
     }
     const box = h('div', { class: 'sketch-box is-short' });
-    sketchMap(box, { label: 'Positions of the returned stops' }).set(layers);
+    layerMap(box, { label: 'Positions of the returned stops' }).set(layers);
 
     return h('div', { class: 'pv' },
       nearby && note('The dark dot is the point you asked about.'),
