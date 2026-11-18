@@ -1398,8 +1398,9 @@ export default {
                                "/api/places/resolve?place_id=",
                                "/api/gmaps-drive?from=&to=&depart=",
                                "/api/pulse", "/api/geo?hour=&limit=&stride=",
-                               "/api/lookup?route=&hour=",
+                               "/api/lookup?route=&hour=", "/api/status",
                                "/api/openapi.json"],
+                   playground: "/playground",
                    docs: ["github.com/crystalcoderz/delhi-pulse",
                           "openapi.json (OpenAPI 3.1 spec; also at /api/openapi.json)"] });
       }

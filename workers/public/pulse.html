@@ -22,6 +22,7 @@
   <nav class="views" aria-label="Views">
     <a href="./">Planner</a>
     <a href="pulse.html" aria-current="page">City Pulse</a>
+    <a href="playground.html">API</a>
   </nav>
 </header>
 
@@ -48,7 +49,7 @@
 
       <div class="field">
         <label for="hour">Hour of day</label>
-        <input id="hour" type="range" min="5" max="22" step="1" value="9"/>
+        <input id="hour" type="range" min="0" max="23" step="1" value="9"/>
       </div>
 
       <div class="row">
@@ -66,7 +67,7 @@
       <p class="label">Observed bus speed</p>
       <div class="ramp" aria-hidden="true"></div>
       <div class="ramp-ticks"><span>8 km/h or slower</span><span>20</span><span>32 or faster</span></div>
-      <p class="hint">Slower routes are drawn thicker. Select a line to see its route number and speed.</p>
+      <p class="hint" id="lineHint">Slower routes are drawn thicker. Select a line to see its route number and speed.</p>
     </div>
 
     <p class="hint" id="geoStatus" role="status"></p>
