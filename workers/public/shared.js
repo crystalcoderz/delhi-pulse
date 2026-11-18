@@ -9,6 +9,7 @@ window.DelhiPulse = (() => {
     amberDeep: '#d98e00',
     red: '#c2401c',
     white: '#ffffff',
+    line: '#d6ddd5',
   };
   const REDUCED_MOTION = matchMedia('(prefers-reduced-motion: reduce)').matches;
   const DELHI_BOUNDS = { south: 28.15, west: 76.6, north: 29.0, east: 77.65 };
@@ -72,11 +73,119 @@ window.DelhiPulse = (() => {
     return googleReady;
   }
 
+  // Clears whatever Google left behind; the page then draws a schematic with sketchMap.
   function mapFailed(container) {
-    container.replaceChildren(
-      h('p', { class: 'map-fallback', text: 'The map could not load. Everything else still works.' }),
-    );
+    container.replaceChildren();
     return null;
+  }
+
+  // A basemap-free drawing of routes and stops on a canvas, fitted to its content.
+  // Layers are lines { path, color, width, dash, casing, opacity, context } or
+  // dots { at, r, fill, stroke, strokeWidth, text, textColor }; coordinates are [lng, lat].
+  function sketchMap(container, options = {}) {
+    const MIN_SPAN_DEG = 0.006;
+    const CAPTION_INSET_PX = 48;
+    const canvas = h('canvas', {
+      class: 'sketch', role: 'img', 'aria-label': options.label || 'Schematic map of bus routes',
+    });
+    container.replaceChildren(canvas);
+    if (options.caption) container.append(h('p', { class: 'sketch-note', text: options.caption }));
+    const ctx = canvas.getContext('2d');
+    let layers = [];
+    let focus = null;
+
+    function extent() {
+      let points = focus;
+      if (!points || !points.length) {
+        const own = layers.filter(layer => !layer.context);
+        points = (own.length ? own : layers).flatMap(layer => layer.path || [layer.at]);
+      }
+      if (!points.length) return null;
+      let west = Infinity, east = -Infinity, south = Infinity, north = -Infinity;
+      for (const [lng, lat] of points) {
+        if (lng < west) west = lng;
+        if (lng > east) east = lng;
+        if (lat < south) south = lat;
+        if (lat > north) north = lat;
+      }
+      return { west, east, south, north };
+    }
+
+    function render() {
+      const width = container.clientWidth, height = container.clientHeight;
+      if (!width || !height) return;
+      const dpr = Math.min(window.devicePixelRatio || 1, 2);
+      canvas.width = Math.round(width * dpr);
+      canvas.height = Math.round(height * dpr);
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      const box = extent();
+      if (!box) return;
+
+      // Longitude is squeezed by cos(latitude) so shapes are not stretched east-west.
+      const squeeze = Math.cos(((box.south + box.north) / 2) * Math.PI / 180);
+      const spanX = Math.max((box.east - box.west) * squeeze, MIN_SPAN_DEG);
+      const spanY = Math.max(box.north - box.south, MIN_SPAN_DEG);
+      const pad = Math.max(24, Math.min(64, Math.min(width, height) / 7));
+      // The caption sits along the bottom edge; the drawing is fitted to the space above it.
+      const usable = height - (options.caption ? CAPTION_INSET_PX : 0);
+      const scale = Math.min((width - 2 * pad) / spanX, (usable - 2 * pad) / spanY);
+      const midLng = (box.west + box.east) / 2, midLat = (box.south + box.north) / 2;
+      const project = ([lng, lat]) =>
+        [width / 2 + (lng - midLng) * squeeze * scale, usable / 2 - (lat - midLat) * scale];
+
+      ctx.lineJoin = 'round';
+      ctx.lineCap = 'round';
+      for (const layer of layers) {
+        ctx.globalAlpha = layer.opacity == null ? 1 : layer.opacity;
+        if (layer.path) {
+          const stroke = (color, lineWidth, dash) => {
+            ctx.beginPath();
+            layer.path.forEach((point, i) => {
+              const [x, y] = project(point);
+              if (i) ctx.lineTo(x, y);
+              else ctx.moveTo(x, y);
+            });
+            ctx.setLineDash(dash || []);
+            ctx.strokeStyle = color;
+            ctx.lineWidth = lineWidth;
+            ctx.stroke();
+          };
+          if (layer.casing) stroke(layer.casing, layer.width + 4);
+          stroke(layer.color, layer.width, layer.dash);
+        } else if (layer.at) {
+          const [x, y] = project(layer.at);
+          ctx.setLineDash([]);
+          ctx.beginPath();
+          ctx.arc(x, y, layer.r, 0, Math.PI * 2);
+          ctx.fillStyle = layer.fill;
+          ctx.fill();
+          if (layer.stroke) {
+            ctx.strokeStyle = layer.stroke;
+            ctx.lineWidth = layer.strokeWidth || 2;
+            ctx.stroke();
+          }
+          if (layer.text) {
+            ctx.fillStyle = layer.textColor || COLORS.white;
+            ctx.font = '700 16px "Barlow Condensed", sans-serif';
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'middle';
+            ctx.fillText(layer.text, x, y + 1);
+          }
+        }
+      }
+      ctx.globalAlpha = 1;
+    }
+
+    new ResizeObserver(render).observe(container);
+    if (document.fonts && document.fonts.ready) document.fonts.ready.then(render);
+
+    return {
+      set(nextLayers, nextFocus) {
+        layers = nextLayers || [];
+        focus = nextFocus || null;
+        render();
+      },
+    };
   }
 
   // Resolves to a google.maps.Map once it has rendered, or null when the map cannot start.
@@ -141,5 +250,5 @@ window.DelhiPulse = (() => {
     return stops[stops.length - 1][1];
   }
 
-  return { API, COLORS, REDUCED_MOTION, h, getJSON, createMap, ramp, colorRamp };
+  return { API, COLORS, REDUCED_MOTION, h, getJSON, createMap, sketchMap, ramp, colorRamp };
 })();

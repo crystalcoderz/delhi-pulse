@@ -2,10 +2,12 @@
 
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Edge API](https://img.shields.io/badge/live-edge%20API-0b5fff)](https://delhi-pulse.prayaas.workers.dev)
+[![Demo Video](https://img.shields.io/badge/watch-demo%20video-ff0000)](https://github.com/crystalcoderz/delhi-pulse/releases/tag/demo-video)
 
 **Real-time bus traffic model and journey planner for Delhi** — Transport Stack Hackathon 2026, Problem 1.
 
 > **Live:** [Full journey planner](https://delhi-pulse.prayaas.workers.dev/) — edge-deployed on Cloudflare Workers (APAC), no laptop required
+> **Watch:** [2-minute demo video](https://github.com/crystalcoderz/delhi-pulse/releases/tag/demo-video) — City Pulse, journey planner, API playground, live GTFS-RT
 > **Open source:** [github.com/crystalcoderz/delhi-pulse](https://github.com/crystalcoderz/delhi-pulse)
 > **Trained model + data:** [huggingface.co/datasets/PRAYAASOG/delhi-pulse-model](https://huggingface.co/datasets/PRAYAASOG/delhi-pulse-model)
 
@@ -99,6 +101,12 @@ use the `DATA_URL` from `pipeline/common.py`).
 
 Deployed edge API: **https://delhi-pulse.prayaas.workers.dev** (same routes
 with or without the `/api` prefix).
+
+Try every endpoint in the browser at
+**https://delhi-pulse.prayaas.workers.dev/playground**: edit the parameters,
+send the request, and read the response as a JSON tree or as a drawn preview
+(journey legs, route speeds, the city speed curve). Each request has a
+shareable link, and the planner links to the exact request behind its results.
 
 ```
 GET /journeys?from=<lat,lng>&to=<lat,lng>&depart=<ISO8601>
