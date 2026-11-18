@@ -1,0 +1,57 @@
+{
+  "test": "journey-level holdout, train Oct 01-24, score Oct 25-31",
+  "n_journeys": 4178,
+  "mean_ride_min": 30.9,
+  "mean_pred_min": 31.8,
+  "mae_min": 4.6,
+  "bias_min": 0.81,
+  "within_5_min": 0.69,
+  "within_10_min": 0.905,
+  "band_coverage": 0.845,
+  "fallback_leg_share": 0.024,
+  "legs_per_journey": 18.1,
+  "by_hour_band": {
+    "0-5": {
+      "n": 234,
+      "mae_min": 5.12,
+      "mean_ride_min": 22.3
+    },
+    "11-16": {
+      "n": 1348,
+      "mae_min": 4.63,
+      "mean_ride_min": 30.6
+    },
+    "17-20": {
+      "n": 820,
+      "mae_min": 5.63,
+      "mean_ride_min": 34.5
+    },
+    "21-23": {
+      "n": 392,
+      "mae_min": 3.79,
+      "mean_ride_min": 24.3
+    },
+    "6-10": {
+      "n": 1384,
+      "mae_min": 4.11,
+      "mean_ride_min": 32.5
+    }
+  },
+  "by_length_band": {
+    "10-20": {
+      "n": 1602,
+      "mae_min": 4.14,
+      "mean_ride_min": 25.8
+    },
+    "21-40": {
+      "n": 1558,
+      "mae_min": 5.76,
+      "mean_ride_min": 48.7
+    },
+    "5-9": {
+      "n": 1018,
+      "mae_min": 3.55,
+      "mean_ride_min": 11.9
+    }
+  }
+}
